@@ -7,7 +7,7 @@ categories: jekyll update
 ## COFFEE ##
 So what does it do to your BODY and MIND?
 
-![Pros](https://www.messenger.com/stickers/asset/?sticker_id=1554246494804398&amp;image_type=BestEffortImage)
+![Pros]({{ site.url }}/img/pro.png)
 
 Pros: 
 
@@ -17,7 +17,7 @@ Pros:
  - Improves reaction time & memory  
  - Improves general cognitive function
 
-![enter image description here](https://www.messenger.com/stickers/asset/?sticker_id=1554246461471068&amp;image_type=BestEffortImage)
+![Cons]({{ site.url }}/img/con.png)
 
 Cons:
 

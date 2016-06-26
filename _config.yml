@@ -8,10 +8,12 @@
 # Site settings
 title: Coffee.Rent
 description: > # this means to ignore newlines until "baseurl:"
-  <i> <b>Coffee Rent</b> [n] </i> : Coffee bought in order to validate spending a prolonged period of time in a cafe.
+  Coffee Rent [n] : Coffee bought in order to validate spending a prolonged period of time in a cafe.
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "http://coffee.rent" # the base hostname & protocol for your site
 twitter_username: CoffeeRent
-
+logo: /img/coffee.png
 # Build settings
 markdown: kramdown
+gems:
+  - jekyll-seo-tag

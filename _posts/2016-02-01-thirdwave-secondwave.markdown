@@ -27,6 +27,7 @@ And it's working – gradually. Individuals are starting to find out about us an
 Doing that implies adjusting our needs as finicky "researchers" with the needs of the client. Just along these lines would we be able to guarantee both that they'll attempt our coffee and that their experience of our coffee will ascend past what they've attempted some time recently. For the ones that are willing, we get a kick out of the chance to test them to extend their coffee experience. 
 
 ![Coffee]({{ site.url }}/img/coffee3.png) 
+
 ## The Struggles – And the Successes ##
 
 Regardless of our progressive accomplishment, there are sure zones we battle with more than others. 

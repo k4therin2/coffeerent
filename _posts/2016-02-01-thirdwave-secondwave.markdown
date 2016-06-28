@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "Ripples: Moving to Thirdwave from Secondwave Coffee"
-date:   2016-06-25 12:17:24 -0700
+date:   2016-02-01 12:17:24 -0700
 categories: thirdwave secondwave coffee
 ---
 
@@ -39,3 +39,17 @@ Coffee is a science. There's an explanation for consistently detail of the gener
 
 
 We're an indication that it's working. We achieving our central goal of conveying our energy to others.
+
+---
+
+---
+
+# February Coffees: #
+
+*This month, you can find the following in our store:*
+
+* Continental Roast
+* New Orleans Roast
+* European Roast
+* Italian Roast
+* French Roast

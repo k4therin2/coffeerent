@@ -2,7 +2,7 @@
 layout: post
 title:  "Fermentation"
 date:   2016-03-01 12:17:24 -0700
-categories: fermentation
+categories: 
 ---
 
 

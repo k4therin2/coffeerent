@@ -2,7 +2,7 @@
 layout: post
 title:  "Indonesian Wet Hulled"
 date:   2016-06-01 12:17:24 -0700
-categories: indonesian
+categories:
 ---
 
 ## Indonesian Wet Hulled ##

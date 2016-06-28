@@ -2,7 +2,7 @@
 layout: post
 title:  "Pulped Natural"
 date:   2016-04-01 12:17:24 -0700
-categories: natural
+categories: 
 ---
 
 ## Pulped Natural ##

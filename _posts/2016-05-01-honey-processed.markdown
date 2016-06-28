@@ -2,7 +2,7 @@
 layout: post
 title:  "Honey Processed Coffee"
 date:   2016-06-01 12:17:24 -0700
-categories: honey process
+categories:
 ---
 
 Have you ever grabbed a pack of red honey processed beans and pondered what honey preparing (not to mention red honey handling) really implies? On the other hand, if it's any superior to the natural processed coffee you learned about last month?

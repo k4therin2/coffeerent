@@ -2,7 +2,7 @@
 layout: post
 title:  "Ripples: Moving to Thirdwave from Secondwave Coffee"
 date:   2016-02-01 12:17:24 -0700
-categories: thirdwave secondwave coffee
+categories: 
 ---
 
 ![Coffee]({{ site.url }}/img/coffee1.png)

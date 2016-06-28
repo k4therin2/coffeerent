@@ -4,6 +4,8 @@ title: About
 permalink: /about/
 ---
 
-Coffee.Rent is high-quality, gourmet coffeeshop. Each month, we provide our loyal customers with a different type of coffee- be that a different roast, bean, or preparation method.
+Coffee.Rent is high-quality, gourmet coffeeshop that believes in being different.
 
-Our coffee is single-source and organic.
+Each month, we explore a <i>different type</i> of coffee- be that a different roast style, bean, or preparation method. On the first day of every month, we update our store and publish a blog post about the new coffee (this month is Indian Wet Hulled).
+
+Currently, our blog is down for maintenence, but check back soon!

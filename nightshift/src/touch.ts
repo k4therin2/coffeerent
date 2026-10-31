@@ -1,7 +1,7 @@
 import type { Input } from './input';
 import { roundRect } from './minigames';
 
-export type TouchMode = 'none' | 'move' | 'tap' | 'mash' | 'zoomies' | 'balance' | 'stare';
+export type TouchMode = 'none' | 'move' | 'tap' | 'mash' | 'zoomies' | 'balance' | 'stare' | 'hold';
 
 interface Btn { x: number; y: number; w: number; h: number; label: string; key: string; hold?: boolean; color?: string }
 
@@ -102,6 +102,9 @@ export class TouchControls {
       case 'balance':
         this.btns.push({ x: safe, y: bottom - big, w: big * 1.5, h: big, label: '◀', key: 'a', hold: true });
         this.btns.push({ x: right - big * 1.5, y: bottom - big, w: big * 1.5, h: big, label: '▶', key: 'd', hold: true });
+        break;
+      case 'hold':
+        this.btns.push({ x: right - big * 1.8, y: bottom - big, w: big * 1.8, h: big, label: 'HOLD', key: ' ', hold: true, color: '#f4c95d' });
         break;
       case 'stare':
         break;

@@ -7,7 +7,7 @@ import { Input } from './input';
 import { makeMinigame, hints, type Minigame } from './minigames';
 import { TouchControls, type TouchMode } from './touch';
 import { drawCat } from './cats';
-import { isSolid, isClimbable } from './map';
+import { isSolid } from './map';
 import { diag, diagText, diagLines, clearDiag, onDiag } from './diag';
 
 const ui = document.getElementById('ui')!;
@@ -115,7 +115,6 @@ class Client {
   toasts: { text: string; kind: string; until: number }[] = [];
   now = 0;
   private posAcc = 0;
-  presentReadyAt = 0;
   private pingTimer = 0;
   private lastSnapAt = 0;
   error = '';
@@ -249,10 +248,7 @@ class Client {
 
     if (input.action) {
       const t = this.findTarget();
-      if (t && t.target) {
-        if (t.target === 'present') { if (this.presentReadyAt > this.snap.time) return; this.presentReadyAt = this.snap.time + 30; }
-        this.send({ t: 'use', target: t.target });
-      }
+      if (t && t.target) this.send({ t: 'use', target: t.target });
     }
   }
 
@@ -306,10 +302,10 @@ class Client {
     }
     cands.sort((a, b) => a.d - b.d);
     if (!cands.length && me.cat === 'melon' && !me.onVent) {
-      const cd = this.presentReadyAt - s.time;
-      return { target: 'present', prompt: cd > 0 ? `Leave a present here (ready in ${Math.ceil(cd)}s)` : 'Leave a present right here' };
+      const cd = (me.specialReadyAt ?? 0) - s.time;
+      if (cd > 0) return { target: '', prompt: `Nothing to paw here. Present ready in ${Math.ceil(cd)}s` };
+      return { target: 'present', prompt: 'Nothing to paw here. Leave a present?' };
     }
-    if (!cands.length && me.cat === 'dorian' && isClimbable(Math.floor(this.x), Math.floor(this.y))) return { target: '', prompt: 'Up on the counter. Good cat. Terrible cat.' };
     return cands[0] ?? null;
   }
 
@@ -542,7 +538,7 @@ function escapeHtml(s: string) { return s.replace(/[&<>"']/g, ch => ({ '&': '&am
 // =====================================================================
 // LOOP
 // =====================================================================
-const MG_TOUCH: Record<string, TouchMode> = { swipe: 'tap', pick: 'tap', rhythm: 'tap', mash: 'mash', zoomies: 'zoomies', balance: 'balance', stare: 'stare' };
+const MG_TOUCH: Record<string, TouchMode> = { swipe: 'tap', pick: 'tap', rhythm: 'tap', mash: 'mash', zoomies: 'zoomies', balance: 'balance', stare: 'stare', hold: 'hold' };
 let last = performance.now();
 let idlePhase = 0;
 function frame(now: number) {

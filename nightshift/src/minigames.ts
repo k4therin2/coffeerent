@@ -345,6 +345,43 @@ export class Balance extends Minigame {
   }
 }
 
+// ---- hold: press and hold, release in the window (Melon) ----
+export class Hold extends Minigame {
+  v = 0; holding = false; released = false;
+  keys() { return [{ kb: 'SPACE', touch: 'HOLD', what: 'hold to push, let go in the green' }]; }
+  step(dt: number, input: Input) {
+    const down = input.is(' ') || input.is('e');
+    if (down) { this.holding = true; this.v = Math.min(1, this.v + Number(this.spec.params.rate) * dt); }
+    else if (this.holding) this.finish();
+    if (this.v >= 1) this.finish();
+  }
+  private finish() {
+    if (this.result) return;
+    const t = Number(this.spec.params.target), wd = Number(this.spec.params.width) * LENIENCY();
+    const d = Math.abs(this.v - t);
+    const ok = d <= wd / 2;
+    this.result = { success: ok, quality: Math.max(0, 1 - d / wd) };
+    this.ping(ok ? '#8be28b' : '#ff7b7b');
+  }
+  protected timeout() { this.finish(); return this.result ?? { success: false, quality: 0 }; }
+  draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    const { x, y, pw } = panel(ctx, w, h, this, 'Too little and nothing happens. Too much and, well. Let go in the green.');
+    const bx = x + 40, bw = pw - 80, by = y + 110;
+    const t = Number(this.spec.params.target), wd = Number(this.spec.params.width) * LENIENCY();
+    ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 40, 10); ctx.fill();
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (t - wd / 2) * bw, by, wd * bw, 40);
+    ctx.fillStyle = this.flash > 0 ? this.flashColor : '#a0704a'; ctx.fillRect(bx, by + 6, this.v * bw, 28);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(this.holding && !this.result ? 'hnnnng' + '.'.repeat(Math.floor(this.v * 6)) : 'squat', w / 2, by + 80);
+    if (this.result) {
+      ctx.font = 'bold 28px system-ui, sans-serif';
+      ctx.fillStyle = this.result.success ? '#8be28b' : '#ff7b7b';
+      ctx.fillText(this.result.success ? 'DELIVERED' : this.v > t ? 'OVERDID IT' : 'FALSE ALARM', w / 2, by + 115);
+    }
+    readyOverlay(ctx, w, h, this);
+  }
+}
+
 export function makeMinigame(spec: MinigameSpec): Minigame {
   switch (spec.kind) {
     case 'swipe': return new Swipe(spec);
@@ -354,5 +391,6 @@ export function makeMinigame(spec: MinigameSpec): Minigame {
     case 'stare': return new Stare(spec);
     case 'rhythm': return new Rhythm(spec);
     case 'balance': return new Balance(spec);
+    case 'hold': return new Hold(spec);
   }
 }

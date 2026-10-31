@@ -25,7 +25,8 @@ export type MinigameKind =
   | 'zoomies'    // arrow sequence
   | 'stare'      // don't press anything
   | 'rhythm'     // licker half of head lick
-  | 'balance';   // lickee half of head lick
+  | 'balance'    // lickee half of head lick
+  | 'hold';      // hold and release in the window (Melon's present)
 
 export interface MinigameSpec {
   token: number;
@@ -61,6 +62,8 @@ export interface PlayerState {
   connected: boolean;
   /** stable per-browser-tab key so a player can rejoin after a drop */
   key: string;
+  /** sim time when this cat's special is usable again (Melon's present) */
+  specialReadyAt: number;
 }
 
 export interface ObjectState {

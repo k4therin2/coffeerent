@@ -37,7 +37,7 @@ export const BAL = {
   mouse: { chaos: 45, dom: 10, noise: 12, respawn: 20, droppedRespawn: 40 },
   objective: { complete: 25, boardClear: 50, boardSize: (n: number) => Math.min(5, 2 + n) },
   // cat specials
-  present: { chaos: 10, rugOrBedChaos: 20, noise: 2, cooldown: 30, steppedBonus: 15, steppedNoise: 10 },
+  present: { chaos: 10, rugOrBedChaos: 20, noise: 2, cooldown: 30, failCooldown: 8, steppedBonus: 15, steppedNoise: 10 },
   drawer: { chaos: 12, dom: 3, noise: 4 },
   counter: { chaosPerSec: 0.5, domPerSec: 0.3, pawprintEvery: 2.5 },
   snack: { chaos: 30, dom: 8, noise: 3, humanNoticesNoise: 15 },
@@ -80,9 +80,9 @@ export class Sim {
   private errandAnnounced = false;
   private errands = 0;
   private lastMoved = new Map<string, number>();
-  private presentCd = new Map<string, number>();
   private pawprintAt = new Map<string, number>();
   private counterTime = new Map<string, number>();
+  private climbed = new Set<string>();
 
   constructor(private send: (pid: string, m: HostMsg) => void, private broadcast: (m: HostMsg) => void) {}
 
@@ -108,7 +108,7 @@ export class Sim {
     const p: PlayerState = {
       id, key, name: cleanName || CAT_NAMES[cat], cat, x: SPAWNS[slot].x, y: SPAWNS[slot].y,
       dir: 'down', moving: false, stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, ignorePosUntil: 0,
-      dominance: 0, chaos: 0, sprays: 0, connected: true,
+      dominance: 0, chaos: 0, sprays: 0, connected: true, specialReadyAt: 0,
     };
     this.players.set(id, p);
     if (this.phase === 'playing') { this.logEv(`${p.name} snuck in through the cat flap.`, 'info'); this.warp(p, CAT_BED.x, CAT_BED.y); }
@@ -127,6 +127,7 @@ export class Sim {
     this.dropped.set(p.key, p);
     this.departed.push({ name: p.name, cat: p.cat, chaos: Math.round(p.chaos), dominance: Math.round(p.dominance), sprays: p.sprays, reason });
     this.logEv(`${p.name} wandered off (${reason}).`, 'info');
+    this.pruneObjectives();
   }
   setCat(id: string, cat: CatId) {
     const p = this.players.get(id);
@@ -146,7 +147,7 @@ export class Sim {
     this.objects = makeObjects();
     this.human = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0, route: HUMAN_ROUTES.hallway, waitUntil: 0 };
     this.mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null, visible: true, respawnAt: 0 };
-    this.decals = []; this.presentCd.clear(); this.pawprintAt.clear(); this.counterTime.clear();
+    this.decals = []; this.pawprintAt.clear(); this.counterTime.clear(); this.climbed.clear();
     this.placeSnack();
     this.ventOccupant = null; this.log = []; this.endReason = undefined;
     this.departed = []; this.dropped.clear(); this.usedObjectives.clear(); this.board = 0;
@@ -155,7 +156,7 @@ export class Sim {
     this.nextErrandAt = rnd(BAL.errand.firstWindow[0], BAL.errand.firstWindow[1]);
     let i = 0;
     for (const p of this.players.values()) {
-      Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0 });
+      Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0, specialReadyAt: 0 });
       this.warp(p, SPAWNS[i].x, SPAWNS[i].y);
       i++;
     }
@@ -175,6 +176,14 @@ export class Sim {
   }
   private hasCat(cat: CatId) { return [...this.players.values()].some(p => p.cat === cat); }
 
+  /** Drop board entries nobody left can do (a departed cat's special, grooming when alone). */
+  private pruneObjectives() {
+    const special: Record<string, CatId> = { present: 'melon', drawer: 'ginny', counter: 'dorian', snack: 'bean' };
+    const before = this.objectives.length;
+    this.objectives = this.objectives.filter(o => o.done || !((special[o.id] && !this.hasCat(special[o.id])) || (o.id === 'lick' && this.players.size < 2)));
+    if (this.objectives.length < before) this.logEv('An objective left with its cat.', 'info');
+    if (this.objectives.length && this.objectives.every(o => o.done)) { this.chaos += BAL.objective.boardClear; this.dealBoard(); }
+  }
   /** Deal a fresh objective board sized and targeted for the current cat count. */
   private dealBoard() {
     this.board++;
@@ -327,12 +336,17 @@ export class Sim {
         return;
     }
   }
-  /** Melon only: leave a present wherever she stands. */
+  /** Melon only: squat wherever she stands. Resolved in finishMinigame('hold'). */
   private leavePresent(p: PlayerState) {
     if (p.cat !== 'melon' || p.onVent) return;
-    if ((this.presentCd.get(p.id) ?? 0) > this.time) return;
+    if (p.specialReadyAt > this.time) return;
+    p.specialReadyAt = this.time + 3; // no double starts while the minigame runs
+    this.startMinigame(p, { kind: 'hold', title: 'Leave a present', time: 7, params: { rate: 0.45, target: 0.7, width: 0.22 } });
+  }
+  private presentDone(p: PlayerState, success: boolean) {
     const P = BAL.present;
-    this.presentCd.set(p.id, this.time + P.cooldown);
+    if (!success) { p.specialReadyAt = this.time + P.failCooldown; this.noise(1); this.logEv(`${p.name} squatted thoughtfully. False alarm.`, 'info'); return; }
+    p.specialReadyAt = this.time + P.cooldown;
     const room = roomAt(Math.floor(p.x), Math.floor(p.y))?.name;
     const onRug = dist(p.x, p.y, this.obj('rug').x, this.obj('rug').y) < 1.2;
     const fancy = onRug || room === 'Bedroom';
@@ -482,6 +496,9 @@ export class Sim {
       case 'balance':
         if (pend.pairId !== undefined) this.pairResult(pend.pairId, p.id, success);
         break;
+      case 'hold':
+        this.presentDone(p, success);
+        break;
     }
   }
 
@@ -521,6 +538,7 @@ export class Sim {
     for (const p of this.players.values()) {
       if (p.cat !== 'dorian' || p.busy || this.time < p.stunnedUntil) continue;
       if (!isClimbable(Math.floor(p.x), Math.floor(p.y))) continue;
+      if (!this.climbed.has(p.id)) { this.climbed.add(p.id); this.logEv(`${p.name} is up on the counter. Good cat. Terrible cat.`, 'dom'); this.send(p.id, { t: 'toast', text: 'Up on the counter. Good cat. Terrible cat.', kind: 'dom' }); }
       const C = BAL.counter;
       this.chaos += C.chaosPerSec * dt; p.chaos += C.chaosPerSec * dt; p.dominance += C.domPerSec * dt;
       this.progress('counter', dt);

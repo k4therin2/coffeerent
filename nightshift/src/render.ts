@@ -1,4 +1,4 @@
-import { TILE, VISION_TILES, type Snapshot, type PlayerState, type Dir } from './types';
+import { TILE, VISION_TILES, type Snapshot, type PlayerState, type Dir, type Decal } from './types';
 import { FURNITURE, MAP_H, MAP_W, ROOMS, isWall, hasLOS, type Furniture } from './map';
 import { drawCat, drawHuman } from './cats';
 import { roundRect } from './minigames';
@@ -135,6 +135,18 @@ export class Renderer {
 
     if (snap) {
       const z32 = TILE * z;
+      // persistent mess
+      for (const dc of snap.decals) {
+        if (seen(dc.x, dc.y) <= 0.02) continue;
+        const [sx, sy] = toScreen(dc.x, dc.y);
+        this.drawDecal(ctx, dc, sx, sy, z32);
+      }
+      if (snap.snack.visible && seen(snap.snack.x, snap.snack.y) > 0.02) {
+        const [sx, sy] = toScreen(snap.snack.x, snap.snack.y);
+        ctx.fillStyle = '#eee'; ctx.beginPath(); ctx.ellipse(sx, sy, 11 * z, 7 * z, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#d9a441'; ctx.beginPath(); ctx.ellipse(sx - 3 * z, sy - 1 * z, 5 * z, 3.5 * z, 0.3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#c0504a'; ctx.beginPath(); ctx.arc(sx + 4 * z, sy, 3 * z, 0, Math.PI * 2); ctx.fill();
+      }
       // objects
       for (const o of snap.objects) {
         if (seen(o.x, o.y) <= 0.02) continue;
@@ -216,6 +228,42 @@ export class Renderer {
     overlay?.(ctx, W, H);
   }
 
+  private drawDecal(ctx: CanvasRenderingContext2D, dc: Decal, sx: number, sy: number, z32: number) {
+    const s = z32 / 32, r = dc.r * z32;
+    const rng = (k: number) => { const v = Math.sin(dc.seed * 12.9898 + k * 78.233) * 43758.5453; return v - Math.floor(v); };
+    switch (dc.kind) {
+      case 'hairball':
+        ctx.fillStyle = '#5a4030'; ctx.beginPath(); ctx.ellipse(sx, sy, r, r * 0.6, rng(1) * Math.PI, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#8a6a50'; ctx.lineWidth = 1.2 * s;
+        for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.moveTo(sx + (rng(i) - 0.5) * r, sy + (rng(i + 9) - 0.5) * r * 0.6); ctx.lineTo(sx + (rng(i + 3) - 0.5) * r * 2.2, sy + (rng(i + 7) - 0.5) * r * 1.4); ctx.stroke(); }
+        break;
+      case 'puddle':
+        ctx.fillStyle = 'rgba(160,140,90,0.55)'; ctx.beginPath(); ctx.ellipse(sx, sy, r * 1.3, r * 0.8, rng(2) * Math.PI, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'present':
+        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(sx + 1 * s, sy + 3 * s, r, r * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#5b3a1e';
+        for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.ellipse(sx, sy - i * 3.5 * s, r * (1 - i * 0.25), r * (0.55 - i * 0.1), 0, 0, Math.PI * 2); ctx.fill(); }
+        ctx.fillStyle = '#7a5230'; ctx.beginPath(); ctx.arc(sx - 2 * s, sy - 9 * s, 2 * s, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(180,220,120,0.5)'; ctx.lineWidth = 1 * s;
+        for (let i = 0; i < 3; i++) { const ox = (i - 1) * 5 * s; ctx.beginPath(); ctx.moveTo(sx + ox, sy - 12 * s); ctx.quadraticCurveTo(sx + ox + 3 * s, sy - 16 * s, sx + ox, sy - 20 * s); ctx.stroke(); }
+        break;
+      case 'crumbs':
+        ctx.fillStyle = '#d9a441';
+        for (let i = 0; i < 14; i++) { ctx.beginPath(); ctx.arc(sx + (rng(i) - 0.5) * r * 2.4, sy + (rng(i + 20) - 0.5) * r * 1.6, (0.8 + rng(i + 40)) * 1.3 * s, 0, Math.PI * 2); ctx.fill(); }
+        ctx.fillStyle = '#eee'; ctx.beginPath(); ctx.ellipse(sx, sy, 10 * s, 6 * s, 0, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'shards':
+        ctx.fillStyle = 'rgba(200,225,255,0.75)';
+        for (let i = 0; i < 7; i++) { const ax = sx + (rng(i) - 0.5) * r * 2.6, ay = sy + (rng(i + 11) - 0.5) * r * 1.4; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax + 4 * s, ay + 2 * s); ctx.lineTo(ax + 1 * s, ay + 5 * s); ctx.fill(); }
+        break;
+      case 'pawprints':
+        ctx.fillStyle = 'rgba(60,40,30,0.45)';
+        for (let i = 0; i < 2; i++) { const ax = sx + (i - 0.5) * 7 * s, ay = sy + (rng(i) - 0.5) * 6 * s; ctx.beginPath(); ctx.ellipse(ax, ay, 2.6 * s, 3.2 * s, 0, 0, Math.PI * 2); ctx.fill(); for (let t = 0; t < 3; t++) { ctx.beginPath(); ctx.arc(ax + (t - 1) * 2.4 * s, ay - 4 * s, 1.1 * s, 0, Math.PI * 2); ctx.fill(); } }
+        break;
+    }
+  }
+
   private drawObject(ctx: CanvasRenderingContext2D, kind: string, done: boolean, sx: number, sy: number, z32: number, now: number, ventBusy: boolean) {
     const s = z32 / 32;
     switch (kind) {
@@ -252,8 +300,14 @@ export class Renderer {
       case 'zoomies':
         ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.font = `${14 * s}px serif`; ctx.textAlign = 'center'; ctx.fillText('💨', sx, sy + 5 * s);
         break;
+      case 'drawer':
+        ctx.fillStyle = '#5a3a1e'; roundRect(ctx, sx - 11 * s, sy - 5 * s, 22 * s, 10 * s, 2 * s); ctx.fill();
+        if (done) { ctx.fillStyle = '#3a2410'; ctx.fillRect(sx - 10 * s, sy + 5 * s, 20 * s, 9 * s); ctx.fillStyle = '#c0a060'; ctx.fillRect(sx - 7 * s, sy + 7 * s, 5 * s, 4 * s); ctx.fillStyle = '#8ab'; ctx.fillRect(sx + 1 * s, sy + 8 * s, 6 * s, 3 * s); }
+        ctx.fillStyle = '#f4c95d'; ctx.fillRect(sx - 3 * s, sy - 1 * s, 6 * s, 2 * s);
+        break;
       case 'pillow': break;
       case 'mouse': break;
+      case 'snack': break;
     }
   }
 

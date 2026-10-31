@@ -1,5 +1,5 @@
 import type Peer from 'peerjs';
-import { CAT_BLURB, CAT_IDS, CAT_NAMES, type CatId, type ClientMsg, type Dir, type HostMsg, type Snapshot } from './types';
+import { CAT_BLURB, CAT_IDS, CAT_NAMES, CAT_SPECIAL, type CatId, type ClientMsg, type Dir, type HostMsg, type Snapshot } from './types';
 import { Sim } from './sim';
 import { hostRoom, joinRoom, loopback, randomCode, type ClientLink, type HostLink } from './net';
 import { Renderer, type LocalView } from './render';
@@ -7,7 +7,7 @@ import { Input } from './input';
 import { makeMinigame, hints, type Minigame } from './minigames';
 import { TouchControls, type TouchMode } from './touch';
 import { drawCat } from './cats';
-import { isSolid } from './map';
+import { isSolid, isClimbable } from './map';
 import { diag, diagText, diagLines, clearDiag, onDiag } from './diag';
 
 const ui = document.getElementById('ui')!;
@@ -115,6 +115,7 @@ class Client {
   toasts: { text: string; kind: string; until: number }[] = [];
   now = 0;
   private posAcc = 0;
+  presentReadyAt = 0;
   private pingTimer = 0;
   private lastSnapAt = 0;
   error = '';
@@ -243,14 +244,18 @@ class Client {
 
     if (input.action) {
       const t = this.findTarget();
-      if (t) this.send({ t: 'use', target: t.target });
+      if (t && t.target) {
+        if (t.target === 'present') { if (this.presentReadyAt > this.snap.time) return; this.presentReadyAt = this.snap.time + 30; }
+        this.send({ t: 'use', target: t.target });
+      }
     }
   }
 
   private tryMove(dx: number, dy: number) {
     const r = 0.28;
-    const free = (x: number, y: number) => !isSolid(Math.floor(x - r), Math.floor(y - r)) && !isSolid(Math.floor(x + r), Math.floor(y - r))
-      && !isSolid(Math.floor(x - r), Math.floor(y + r)) && !isSolid(Math.floor(x + r), Math.floor(y + r));
+    const climb = this.me?.cat === 'dorian';
+    const free = (x: number, y: number) => !isSolid(Math.floor(x - r), Math.floor(y - r), climb) && !isSolid(Math.floor(x + r), Math.floor(y - r), climb)
+      && !isSolid(Math.floor(x - r), Math.floor(y + r), climb) && !isSolid(Math.floor(x + r), Math.floor(y + r), climb);
     if (free(this.x + dx, this.y)) this.x += dx;
     if (free(this.x, this.y + dy)) this.y += dy;
   }
@@ -262,6 +267,8 @@ class Client {
     for (const o of s.objects) {
       let px = o.x, py = o.y;
       if (o.kind === 'mouse') { if (!s.mouse.visible || s.mouse.carrier) continue; px = s.mouse.x; py = s.mouse.y; }
+      if (o.kind === 'snack') { if (!s.snack.visible || me.cat !== 'bean') continue; px = s.snack.x; py = s.snack.y; }
+      if (o.kind === 'drawer' && (me.cat !== 'ginny' || o.done)) continue;
       const d = dist(this.x, this.y, px, py);
       if (d > 1.5) continue;
       if (o.busyBy || o.cooldownUntil > s.time) continue;
@@ -279,6 +286,8 @@ class Client {
           prompt = occ ? `Shove ${occ.name} off the vent` : 'Curl up on the warm vent'; break;
         }
         case 'mouse': prompt = 'Grab the toy mouse'; break;
+        case 'snack': prompt = "Eat the human's snack (Bean only)"; break;
+        case 'drawer': prompt = `Open the ${o.label} (Ginny only)`; break;
         case 'pillow': if (!me.carryingMouse) continue; prompt = "Leave the mouse on the human's pillow"; break;
         default: continue;
       }
@@ -291,6 +300,11 @@ class Client {
       if (d <= 1.5) cands.push({ d: d + 0.2, target: 'player:' + p.id, prompt: `Groom ${p.name}'s head` });
     }
     cands.sort((a, b) => a.d - b.d);
+    if (!cands.length && me.cat === 'melon' && !me.onVent) {
+      const cd = this.presentReadyAt - s.time;
+      return { target: 'present', prompt: cd > 0 ? `Leave a present here (ready in ${Math.ceil(cd)}s)` : 'Leave a present right here' };
+    }
+    if (!cands.length && me.cat === 'dorian' && isClimbable(Math.floor(this.x), Math.floor(this.y))) return { target: '', prompt: 'Up on the counter. Good cat. Terrible cat.' };
     return cands[0] ?? null;
   }
 
@@ -333,6 +347,7 @@ function renderMenu(error = '') {
       <input type="text" id="name" maxlength="14" placeholder="what the humans call you" value="${escapeHtml(saved.name)}" />
       <h2>Your cat</h2>
       <div class="cats" id="cats"></div>
+      <p class="hint" id="special"></p>
       <h2>Play</h2>
       <div class="row">
         <button id="host">Host a shift</button>
@@ -349,7 +364,8 @@ function renderMenu(error = '') {
       </div>
     </div>`;
   const catsEl = ui.querySelector('#cats')!;
-  const draw = () => { catsEl.innerHTML = ''; for (const c of CAT_IDS) catsEl.append(catCard(c, saved.cat === c, false, () => { saved.cat = c; draw(); })); };
+  const special = ui.querySelector('#special')!;
+  const draw = () => { catsEl.innerHTML = ''; for (const c of CAT_IDS) catsEl.append(catCard(c, saved.cat === c, false, () => { saved.cat = c; draw(); })); special.textContent = CAT_SPECIAL[saved.cat]; };
   draw();
   const nameEl = ui.querySelector('#name') as HTMLInputElement;
   const codeEl = ui.querySelector('#code') as HTMLInputElement;

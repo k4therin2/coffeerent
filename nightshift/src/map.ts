@@ -97,13 +97,25 @@ for (const f of FURNITURE) if (f.tall) for (let y = f.y; y < f.y + f.h; y++) for
 /** walls and tall furniture block sight */
 export function blocksSight(tx: number, ty: number): boolean { return isWall(tx, ty) || TALL.has(tx + ',' + ty); }
 
-export function isSolid(tx: number, ty: number): boolean {
+const CLIMBABLE_KINDS = new Set<Furniture['kind']>(['counter', 'table', 'desk']);
+const CLIMB = new Set<string>();
+for (const f of FURNITURE) if (CLIMBABLE_KINDS.has(f.kind)) for (let y = f.y; y < f.y + f.h; y++) for (let x = f.x; x < f.x + f.w; x++) CLIMB.add(x + ',' + y);
+/** surfaces Dorian may stand on (counters, tables, the desk) */
+export function isClimbable(tx: number, ty: number): boolean { return CLIMB.has(tx + ',' + ty); }
+
+export function isSolid(tx: number, ty: number, canClimb = false): boolean {
   if (isWall(tx, ty)) return true;
+  if (canClimb && isClimbable(tx, ty)) return false;
   for (const f of FURNITURE) {
     if (f.solid && tx >= f.x && tx < f.x + f.w && ty >= f.y && ty < f.y + f.h) return true;
   }
   return false;
 }
+
+/** places the human leaves a snack: visible, reachable, spread around the house */
+export const SNACK_SPOTS = [
+  { x: 8.5, y: 4.5 }, { x: 16.5, y: 6.5 }, { x: 20.5, y: 11.5 }, { x: 30.5, y: 16.5 }, { x: 33.5, y: 3.5 }, { x: 2.5, y: 4.5 }, { x: 13.5, y: 17.5 },
+];
 
 export const CAT_BED = { x: 1.5, y: 7.5 };
 /** spawn row: living room row 5 is clear of furniture */
@@ -168,6 +180,12 @@ export function makeObjects(): ObjectState[] {
     o('zoomies', 'zoomies', 2, 11, 'hallway runway'),
     o('pillow', 'pillow', 29, 3, "the human's pillow"),
     o('mousepad', 'mouse', 15, 17, 'toy mouse'),
+    o('snackspot', 'snack', 8, 4, "the human's snack"),
+    // drawers: Ginny only. They stay open once opened.
+    o('drawer1', 'drawer', 12, 1, 'kitchen drawer'),
+    o('drawer2', 'drawer', 27, 1, 'nightstand drawer'),
+    o('drawer3', 'drawer', 28, 14, 'desk drawer'),
+    o('drawer4', 'drawer', 21, 14, 'laundry drawer'),
   ];
 }
 

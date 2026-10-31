@@ -4,10 +4,16 @@ export const CAT_NAMES: Record<CatId, string> = {
   dorian: 'Dorian', bean: 'Bean', melon: 'Melon', ginny: 'Ginny',
 };
 export const CAT_BLURB: Record<CatId, string> = {
-  dorian: 'Russian blue. Silent, judgmental.',
-  bean: 'Toyger. Tiny tiger, huge opinions.',
-  melon: 'Fat tabby, white socks. Lord of the vent.',
-  ginny: 'Grey, white socks, dramatic face.',
+  dorian: 'Russian blue. Climbs onto counters.',
+  bean: 'Toyger. Eats the human\'s snack.',
+  melon: 'Fat tabby. Leaves presents anywhere.',
+  ginny: 'Grey, dramatic. Opens drawers.',
+};
+export const CAT_SPECIAL: Record<CatId, string> = {
+  dorian: 'Only Dorian can walk on counters, tables and the desk. Paw prints everywhere.',
+  bean: 'Only Bean can eat the snack the human left out. Crumbs everywhere.',
+  melon: 'With nothing else nearby, Melon can leave a present right there. The human may step in it.',
+  ginny: 'Only Ginny can open drawers. They stay open.',
 };
 
 export type Dir = 'up' | 'down' | 'left' | 'right';
@@ -74,7 +80,10 @@ export interface ObjectState {
 
 export type ObjectKind =
   | 'knock' | 'cabinet' | 'rug' | 'tp' | 'window' | 'vent' | 'zoomies'
-  | 'mouse' | 'pillow' | 'bed';
+  | 'mouse' | 'pillow' | 'bed' | 'drawer' | 'snack';
+
+/** persistent mess left on the floor for the rest of the night */
+export interface Decal { kind: 'hairball' | 'present' | 'crumbs' | 'shards' | 'pawprints' | 'puddle'; x: number; y: number; r: number; seed: number }
 
 export interface Objective {
   id: string;
@@ -118,6 +127,9 @@ export interface Snapshot {
   objectives: Objective[];
   human: HumanState;
   mouse: { x: number; y: number; carrier: string | null; visible: boolean };
+  /** Bean's target: the human's snack, if one is out */
+  snack: { x: number; y: number; visible: boolean };
+  decals: Decal[];
   log: LogEvent[];
   ventOccupant: string | null;
   endReason?: string;

@@ -65,3 +65,8 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
   .cat span { display: none; }
 }
 button { touch-action: manipulation; }
+
+details.diag { margin-top: 16px; font-size: 12px; color: var(--muted); }
+details.diag summary { cursor: pointer; }
+details.diag pre { background: #0f0c1a; border-radius: 8px; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11px; line-height: 1.45; margin: 0; }
+details.diag .warn { color: #ffb347; } details.diag .error { color: var(--red); } details.diag .info { color: #bdb6cc; }

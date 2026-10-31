@@ -53,6 +53,8 @@ export interface PlayerState {
   chaos: number; // personal contribution
   sprays: number;
   connected: boolean;
+  /** stable per-browser-tab key so a player can rejoin after a drop */
+  key: string;
 }
 
 export interface ObjectState {
@@ -95,8 +97,12 @@ export interface LogEvent {
 
 export type Phase = 'lobby' | 'playing' | 'results';
 
+export interface Departed { name: string; cat: CatId; chaos: number; dominance: number; sprays: number; reason: string }
+
 export interface Snapshot {
   phase: Phase;
+  /** players who left mid-round, kept for the results screen */
+  departed: Departed[];
   time: number;        // sim seconds elapsed
   timeLeft: number;
   suspicion: number;   // 0..100
@@ -113,7 +119,7 @@ export interface Snapshot {
 
 // ---- network messages ----
 export type ClientMsg =
-  | { t: 'hello'; name: string; cat: CatId }
+  | { t: 'hello'; name: string; cat: CatId; key: string }
   | { t: 'pickcat'; cat: CatId }
   | { t: 'pos'; x: number; y: number; dir: Dir; moving: boolean }
   | { t: 'use'; target: string } // object id or 'player:<id>' or 'vent'

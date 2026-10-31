@@ -8,6 +8,7 @@ import { makeMinigame, hints, type Minigame } from './minigames';
 import { TouchControls, type TouchMode } from './touch';
 import { drawCat } from './cats';
 import { isSolid } from './map';
+import { diag, diagText, diagLines, clearDiag, onDiag } from './diag';
 
 const ui = document.getElementById('ui')!;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -25,6 +26,10 @@ const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax -
 // =====================================================================
 // HOST
 // =====================================================================
+const HEARTBEAT_TIMEOUT_MS = 20000;
+/** stable per tab, so a dropped player can be matched back to their cat */
+const CLIENT_KEY = (() => { try { let k = sessionStorage.getItem('ns-key'); if (!k) { k = Math.random().toString(36).slice(2, 10); sessionStorage.setItem('ns-key', k); } return k; } catch { return Math.random().toString(36).slice(2, 10); } })();
+
 class Host {
   sim: Sim;
   links = new Map<string, ClientLink>();
@@ -38,7 +43,7 @@ class Host {
   }
   async listen() {
     try { this.peer = await hostRoom(this.code, (c) => this.attach(c)); }
-    catch (e) { console.warn('PeerJS unavailable, offline solo mode', e); this.offline = true; }
+    catch (e) { diag('host: matchmaking unavailable, offline solo mode: ' + e, 'error'); this.offline = true; }
     let last = performance.now();
     const STEP = 1 / 30;
     this.timer = window.setInterval(() => {
@@ -50,7 +55,13 @@ class Host {
       last -= elapsed * 1000;
       // drop players whose connection went silent (closed tabs are not always reported by WebRTC)
       for (const [id, seen] of this.lastSeen) {
-        if (id !== 'host' && now - seen > 8000) { const l = this.links.get(id); this.links.delete(id); this.lastSeen.delete(id); l?.close(); this.sim.removePlayer(id); }
+        if (id !== 'host' && now - seen > HEARTBEAT_TIMEOUT_MS) {
+          const l = this.links.get(id); this.links.delete(id); this.lastSeen.delete(id);
+          const name = this.sim.players.get(id)?.name ?? id.slice(-6);
+          diag(`host: ${name} silent for ${Math.round((now - seen) / 1000)}s (phone asleep or network gone), removing`, 'warn');
+          l?.close(); this.sim.removePlayer(id, 'no signal for ' + Math.round(HEARTBEAT_TIMEOUT_MS / 1000) + 's');
+          for (const o of this.links.values()) o.send({ t: 'toast', text: `${name} lost connection. They can rejoin with the room code.`, kind: 'bad' });
+        }
       }
       this.snapAcc += dt;
       if (this.sim.phase !== 'lobby' && this.snapAcc >= 1 / 12) {
@@ -65,18 +76,26 @@ class Host {
       this.lastSeen.set(link.id, performance.now());
       if (m.t === 'ping') return;
       if (m.t === 'hello') {
-        if (this.sim.phase !== 'lobby') { link.send({ t: 'reject', reason: 'That room is mid-shift. Wait for the round to end.' }); setTimeout(() => link.close(), 300); return; }
+        if (this.sim.phase === 'results') { diag(`host: rejected ${m.name} (results screen)`, 'warn'); link.send({ t: 'reject', reason: 'That shift just ended. Try again once the host is back in the lobby.' }); setTimeout(() => link.close(), 300); return; }
         this.links.set(link.id, link);
         link.send({ t: 'welcome', id: link.id, code: this.code });
-        const p = this.sim.addPlayer(link.id, m.name, m.cat);
-        if (!p) { this.links.delete(link.id); link.send({ t: 'reject', reason: 'Room is full (4 cats max).' }); setTimeout(() => link.close(), 300); return; }
+        const res = this.sim.addPlayer(link.id, m.name, m.cat, m.key || link.id);
+        if (!res) { this.links.delete(link.id); diag(`host: rejected ${m.name} (room full)`, 'warn'); link.send({ t: 'reject', reason: 'Room is full (4 cats max).' }); setTimeout(() => link.close(), 300); return; }
+        diag(`host: ${res.p.name} ${res.rejoined ? 'rejoined' : 'joined'} as ${res.p.cat} (${link.id.slice(-6)}) during ${this.sim.phase}`);
+        if (this.sim.phase === 'playing') link.send({ t: 'snap', s: this.sim.snapshot() });
         return;
       }
       if (m.t === 'start') { if (link.id === 'host' && this.sim.phase === 'lobby' && this.sim.players.size > 0) this.sim.start(); return; }
       if (m.t === 'again') { if (link.id === 'host' && this.sim.phase === 'results') this.sim.backToLobby(); return; }
       this.sim.handle(link.id, m);
     };
-    link.onClose = () => { this.links.delete(link.id); this.lastSeen.delete(link.id); this.sim.removePlayer(link.id); };
+    link.onClose = (reason) => {
+      if (!this.links.has(link.id)) return;
+      const name = this.sim.players.get(link.id)?.name ?? link.id.slice(-6);
+      diag(`host: ${name} left (${reason})`, 'warn');
+      this.links.delete(link.id); this.lastSeen.delete(link.id); this.sim.removePlayer(link.id, reason);
+      for (const o of this.links.values()) o.send({ t: 'toast', text: `${name} dropped (${reason}). They can rejoin with the code.`, kind: 'bad' });
+    };
   }
 }
 
@@ -100,23 +119,54 @@ class Client {
   private lastSnapAt = 0;
   error = '';
 
+  reconnecting = false;
   constructor(public link: HostLink, public name: string, public cat: CatId, public isHost: boolean, public code: string, public offline: boolean) {
+    this.bind(link);
+    this.pingTimer = window.setInterval(() => this.send({ t: 'ping' }), 2000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && client === this) { diag('tab visible again, pinging host'); this.send({ t: 'ping' }); } });
+  }
+  private bind(link: HostLink) {
+    this.link = link;
     link.onMessage = (m) => this.onMessage(m);
     link.onClose = (r) => {
-      if (client !== this) return; // a newer session replaced this one
-      clearInterval(this.pingTimer);
-      client = null; this.error = 'Lost connection to the host (' + r + ').'; this.screen = 'connecting'; renderMenu(this.error);
+      if (client !== this || this.reconnecting) return; // a newer session replaced this one
+      diag(`client: link to host lost (${r})`, 'warn');
+      if (this.isHost) { clearInterval(this.pingTimer); client = null; this.error = 'Lost connection (' + r + ').'; renderMenu(this.error); return; }
+      void this.reconnect(r);
     };
-    link.send({ t: 'hello', name, cat });
-    this.pingTimer = window.setInterval(() => this.send({ t: 'ping' }), 2000);
+    link.send({ t: 'hello', name: this.name, cat: this.cat, key: CLIENT_KEY });
+  }
+  /** Try to get back into the same room for about a minute. */
+  private async reconnect(why: string) {
+    this.reconnecting = true;
+    this.toast('Connection lost. Reconnecting…', 'bad');
+    const delays = [1500, 3000, 5000, 8000, 12000, 15000, 15000];
+    for (let i = 0; i < delays.length && client === this; i++) {
+      await new Promise(r => setTimeout(r, delays[i]));
+      if (client !== this) return;
+      try {
+        diag(`client: reconnect attempt ${i + 1}`);
+        const { link } = await joinRoom(this.code);
+        this.lastSnapAt = this.now; this.reconnecting = false;
+        this.bind(link);
+        this.toast('Reconnected.', 'good');
+        diag('client: reconnected');
+        return;
+      } catch (e: any) { diag(`client: reconnect attempt ${i + 1} failed: ${e?.message ?? e}`, 'warn'); }
+    }
+    if (client !== this) return;
+    clearInterval(this.pingTimer); client = null;
+    this.error = `Lost connection to the host (${why}) and could not get back in. The room code still works if the host is up.`;
+    renderMenu(this.error);
   }
   send(m: ClientMsg) { this.link.send(m); }
   dispose() { clearInterval(this.pingTimer); this.link.onClose = null; this.link.close(); }
 
   onMessage(m: HostMsg) {
     switch (m.t) {
-      case 'welcome': this.id = m.id; break;
+      case 'welcome': this.id = m.id; diag(`client: welcomed as ${m.id.slice(-6)} in room ${m.code}`); break;
       case 'reject':
+        diag(`client: rejected: ${m.reason}`, 'warn');
         this.error = m.reason; this.dispose();
         if (client === this) { client = null; renderMenu(m.reason); }
         break;
@@ -144,7 +194,7 @@ class Client {
       case 'mgstart': this.minigame = makeMinigame(m.spec); this.moving = false; break;
       case 'mgcancel': if (this.minigame?.spec.token === m.token) this.minigame = null; break;
       case 'warp': this.x = m.x; this.y = m.y; this.moving = false; this.posAcc = 0; break;
-      case 'toast': this.toast(m.text, m.kind); break;
+      case 'toast': this.toast(m.text, m.kind); if (m.kind === 'bad') diag('event: ' + m.text); break;
     }
   }
   toast(text: string, kind = 'info') { this.toasts.push({ text, kind, until: this.now + 3 }); if (this.toasts.length > 3) this.toasts.shift(); }
@@ -160,7 +210,7 @@ class Client {
       if (o.moving) o.phase += dt * 14;
     }
     if (this.screen !== 'playing' || !this.snap) return;
-    if (!this.isHost && this.lastSnapAt && this.now - this.lastSnapAt > 8) { this.link.onClose?.('host went quiet'); return; }
+    if (!this.isHost && !this.reconnecting && this.lastSnapAt && this.now - this.lastSnapAt > 10) { this.link.onClose?.('no updates from host for 10s'); return; }
     const me = this.me;
     const stunned = me ? this.snap.time < me.stunnedUntil : false;
 
@@ -310,6 +360,7 @@ function renderMenu(error = '') {
   hostBtn.onclick = async () => {
     const name = getName();
     busy(true); err.textContent = 'Opening the cat flap…';
+    diag(`menu: hosting as ${name} (${saved.cat})`);
     host = new Host(randomCode());
     await host.listen();
     const lb = loopback();
@@ -321,6 +372,7 @@ function renderMenu(error = '') {
     const code = codeEl.value.trim().toUpperCase();
     if (code.length !== 4) { err.textContent = 'Room codes are 4 letters.'; return; }
     busy(true); err.textContent = 'Sniffing around for the host…';
+    diag(`menu: joining ${code} as ${name} (${saved.cat})`);
     try {
       const { link } = await joinRoom(code);
       client = new Client(link, name, saved.cat, false, code, false);
@@ -347,7 +399,9 @@ function renderLobby(c: Client) {
         ${c.isHost ? '<button id="start">Start the night shift</button>' : '<button disabled>Host starts the shift</button>'}
         <button id="leave" class="secondary">Leave</button>
       </div>
+      ${logPanel()}
     </div>`;
+  wireLogPanel();
   const pl = ui.querySelector('#players')!;
   for (const p of c.lobby) {
     const el = document.createElement('div'); el.className = 'player';
@@ -367,7 +421,8 @@ function renderLobby(c: Client) {
 
 function renderResults(c: Client) {
   const s = c.snap!;
-  const players = [...s.players].sort((a, b) => b.dominance - a.dominance);
+  const players = [...s.players.map(p => ({ ...p, left: '' })), ...s.departed.map(d => ({ ...d, left: d.reason }))]
+    .sort((a, b) => b.dominance - a.dominance);
   const top = players[0];
   const busted = s.suspicion >= 100;
   ui.innerHTML = `
@@ -382,16 +437,34 @@ function renderResults(c: Client) {
       ${s.objectives.map(o => `<div class="${o.done ? 'ok' : 'bad'}">${o.done ? '☑' : '☐'} ${o.text}${o.target > 1 ? ` (${Math.floor(o.progress)}/${o.target})` : ''}</div>`).join('')}
       <h2>Cats</h2>
       <table><tr><th>Cat</th><th>Chaos caused</th><th>Dominance</th><th>Sprayed</th></tr>
-      ${players.map((p, i) => `<tr><td>${i === 0 ? '👑 ' : ''}<b>${escapeHtml(p.name)}</b> <span class="hint">${CAT_NAMES[p.cat]}</span></td><td>${p.chaos}</td><td>${p.dominance}</td><td>${p.sprays}</td></tr>`).join('')}
+      ${players.map((p, i) => `<tr><td>${i === 0 ? '👑 ' : ''}<b>${escapeHtml(p.name)}</b> <span class="hint">${CAT_NAMES[p.cat]}${p.left ? ` · left (${escapeHtml(p.left)})` : ''}</span></td><td>${p.chaos}</td><td>${p.dominance}</td><td>${p.sprays}</td></tr>`).join('')}
       </table>
+      ${logPanel()}
       <div class="row" style="margin-top:18px">
         ${c.isHost ? '<button id="again">Back to lobby</button>' : '<button disabled>Waiting for host</button>'}
         <button id="leave" class="secondary">Leave</button>
       </div>
     </div>`;
+  wireLogPanel();
   const again = ui.querySelector('#again') as HTMLButtonElement | null;
   if (again) again.onclick = () => c.send({ t: 'again' });
   (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
+}
+
+function logPanel() {
+  return `<details class="diag" id="diag"><summary>Connection log (${diagLines().length} lines)</summary>
+    <div class="row" style="margin:8px 0"><button class="secondary" id="diag-copy">Copy log</button><button class="secondary" id="diag-clear">Clear</button></div>
+    <pre id="diag-pre"></pre></details>`;
+}
+let diagUnsub: (() => void) | null = null;
+function wireLogPanel() {
+  const pre = ui.querySelector('#diag-pre') as HTMLElement | null;
+  if (!pre) return;
+  const paint = () => { pre.innerHTML = diagLines().slice(-120).map(l => `<span class="${l.level}">${escapeHtml(l.t)} ${escapeHtml(l.msg)}</span>`).join('\n'); pre.scrollTop = pre.scrollHeight; };
+  paint();
+  diagUnsub?.(); diagUnsub = onDiag(paint);
+  (ui.querySelector('#diag-copy') as HTMLButtonElement).onclick = () => { navigator.clipboard?.writeText(diagText()); (ui.querySelector('#diag-copy') as HTMLButtonElement).textContent = 'Copied'; };
+  (ui.querySelector('#diag-clear') as HTMLButtonElement).onclick = () => clearDiag();
 }
 
 function escapeHtml(s: string) { return s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!)); }

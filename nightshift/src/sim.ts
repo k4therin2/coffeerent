@@ -1,5 +1,5 @@
 import {
-  type CatId, type ClientMsg, type HostMsg, type LogEvent, type MinigameSpec, type Objective,
+  type CatId, type ClientMsg, type Departed, type HostMsg, type LogEvent, type MinigameSpec, type Objective,
   type ObjectState, type Phase, type PlayerState, type Snapshot, type HumanState, CAT_IDS, CAT_NAMES, ROUND_SECONDS,
 } from './types';
 import { CAT_BED, HUMAN_BED, HUMAN_PATROL, MOUSE_SPAWN, SPAWNS, hasLOS, makeObjects } from './map';
@@ -34,6 +34,9 @@ export class Sim {
   mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null as string | null, visible: true, respawnAt: 0 };
   ventOccupant: string | null = null;
   log: LogEvent[] = [];
+  departed: Departed[] = [];
+  /** full state of players who dropped mid-round, keyed by their rejoin key */
+  private dropped = new Map<string, PlayerState>();
   endReason?: string;
   private pending = new Map<number, Pending>();
   private pairs = new Map<number, Pair>();
@@ -45,20 +48,37 @@ export class Sim {
   constructor(private send: (pid: string, m: HostMsg) => void, private broadcast: (m: HostMsg) => void) {}
 
   // ---------- lobby ----------
-  addPlayer(id: string, name: string, wantCat: CatId): PlayerState | null {
+  /**
+   * Add a player. Mid-round, a player whose key (or, failing that, name) matches
+   * someone who dropped gets their cat and scores back. Returns 'rejoined' | 'joined' | null (full).
+   */
+  addPlayer(id: string, name: string, wantCat: CatId, key: string): { p: PlayerState; rejoined: boolean } | null {
     if (this.players.size >= 4) return null;
+    const cleanName = name.slice(0, 14);
+    const prev = this.dropped.get(key) ?? [...this.dropped.values()].find(d => d.name === cleanName && cleanName);
     const taken = new Set([...this.players.values()].map(p => p.cat));
+    if (prev && !taken.has(prev.cat)) {
+      this.dropped.delete(prev.key);
+      this.departed = this.departed.filter(d => d.name !== prev.name);
+      const p: PlayerState = { ...prev, id, key, connected: true, busy: false, onVent: false, carryingMouse: false, stunnedUntil: 0, ignorePosUntil: 0, x: CAT_BED.x, y: CAT_BED.y };
+      this.players.set(id, p);
+      if (this.phase === 'playing') { this.logEv(`${p.name} is back.`, 'good'); this.warp(p, CAT_BED.x, CAT_BED.y); }
+      this.sendLobby();
+      return { p, rejoined: true };
+    }
     const cat = taken.has(wantCat) ? CAT_IDS.find(c => !taken.has(c))! : wantCat;
+    const slot = this.players.size;
     const p: PlayerState = {
-      id, name: name.slice(0, 14) || CAT_NAMES[cat], cat, x: SPAWNS[this.players.size].x, y: SPAWNS[this.players.size].y,
+      id, key, name: cleanName || CAT_NAMES[cat], cat, x: SPAWNS[slot].x, y: SPAWNS[slot].y,
       dir: 'down', moving: false, stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, ignorePosUntil: 0,
       dominance: 0, chaos: 0, sprays: 0, connected: true,
     };
     this.players.set(id, p);
+    if (this.phase === 'playing') { this.logEv(`${p.name} snuck in through the cat flap.`, 'info'); this.warp(p, CAT_BED.x, CAT_BED.y); }
     this.sendLobby();
-    return p;
+    return { p, rejoined: false };
   }
-  removePlayer(id: string) {
+  removePlayer(id: string, reason = 'disconnected') {
     const p = this.players.get(id);
     if (!p) return;
     if (this.phase === 'lobby') { this.players.delete(id); this.sendLobby(); return; }
@@ -67,7 +87,9 @@ export class Sim {
     if (this.mouse.carrier === id) this.dropMouse(p);
     this.cancelPendingFor(id);
     this.players.delete(id);
-    this.logEv(`${p.name} wandered off (disconnected).`, 'info');
+    this.dropped.set(p.key, p);
+    this.departed.push({ name: p.name, cat: p.cat, chaos: Math.round(p.chaos), dominance: Math.round(p.dominance), sprays: p.sprays, reason });
+    this.logEv(`${p.name} wandered off (${reason}).`, 'info');
   }
   setCat(id: string, cat: CatId) {
     const p = this.players.get(id);
@@ -88,6 +110,7 @@ export class Sim {
     this.human = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0 };
     this.mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null, visible: true, respawnAt: 0 };
     this.ventOccupant = null; this.log = []; this.endReason = undefined; this.allDoneBonus = false;
+    this.departed = []; this.dropped.clear();
     this.pending.clear(); this.pairs.clear(); this.shoveCd.clear(); this.lickCd.clear();
     let i = 0;
     for (const p of this.players.values()) {
@@ -433,7 +456,7 @@ export class Sim {
       objects: this.objects, objectives: this.objectives,
       human: { phase: this.human.phase, x: this.human.x, y: this.human.y, dir: this.human.dir },
       mouse: { x: this.mouse.x, y: this.mouse.y, carrier: this.mouse.carrier, visible: this.mouse.visible },
-      log: this.log, ventOccupant: this.ventOccupant, endReason: this.endReason,
+      log: this.log, ventOccupant: this.ventOccupant, endReason: this.endReason, departed: this.departed,
     };
   }
 }

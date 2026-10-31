@@ -135,6 +135,12 @@ export class Renderer {
 
     if (snap) {
       const z32 = TILE * z;
+      // objects
+      for (const o of snap.objects) {
+        if (seen(o.x, o.y) <= 0.02) continue;
+        const [sx, sy] = toScreen(o.x, o.y);
+        this.drawObject(ctx, o.kind, o.done, sx, sy, z32, v.now, snap.ventOccupant !== null && o.kind === 'vent');
+      }
       // persistent mess
       for (const dc of snap.decals) {
         if (seen(dc.x, dc.y) <= 0.02) continue;
@@ -146,12 +152,6 @@ export class Renderer {
         ctx.fillStyle = '#eee'; ctx.beginPath(); ctx.ellipse(sx, sy, 11 * z, 7 * z, 0, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#d9a441'; ctx.beginPath(); ctx.ellipse(sx - 3 * z, sy - 1 * z, 5 * z, 3.5 * z, 0.3, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#c0504a'; ctx.beginPath(); ctx.arc(sx + 4 * z, sy, 3 * z, 0, Math.PI * 2); ctx.fill();
-      }
-      // objects
-      for (const o of snap.objects) {
-        if (seen(o.x, o.y) <= 0.02) continue;
-        const [sx, sy] = toScreen(o.x, o.y);
-        this.drawObject(ctx, o.kind, o.done, sx, sy, z32, v.now, snap.ventOccupant !== null && o.kind === 'vent');
       }
       if (snap.mouse.visible && seen(snap.mouse.x, snap.mouse.y) > 0.02) {
         const [sx, sy] = toScreen(snap.mouse.x, snap.mouse.y);

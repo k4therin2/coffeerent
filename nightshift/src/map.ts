@@ -56,39 +56,46 @@ export interface Furniture {
   kind: 'couch' | 'table' | 'counter' | 'fridge' | 'bed' | 'nightstand' | 'toilet' | 'tub'
       | 'washer' | 'dryer' | 'desk' | 'chair' | 'shelf' | 'plant' | 'litter' | 'catbed' | 'tv' | 'lamp';
   x: number; y: number; w: number; h: number; solid: boolean;
+  /** furniture a cat can hide behind: blocks line of sight for the human and for the fog */
+  tall?: boolean;
 }
 export const FURNITURE: Furniture[] = [
   // Living room
-  { kind: 'couch', x: 4, y: 6, w: 4, h: 1, solid: true },
-  { kind: 'table', x: 5, y: 3, w: 2, h: 1, solid: true },
+  { kind: 'couch', tall: true, x: 4, y: 6, w: 4, h: 1, solid: true },
+  { kind: 'table', tall: true, x: 5, y: 3, w: 2, h: 1, solid: true },
   { kind: 'tv', x: 8, y: 1, w: 2, h: 1, solid: true },
-  { kind: 'plant', x: 10, y: 1, w: 1, h: 1, solid: true },
+  { kind: 'plant', tall: true, x: 10, y: 1, w: 1, h: 1, solid: true },
   { kind: 'catbed', x: 1, y: 7, w: 1, h: 1, solid: false },
   { kind: 'lamp', x: 1, y: 1, w: 1, h: 1, solid: true },
   // Kitchen
   { kind: 'counter', x: 12, y: 1, w: 8, h: 1, solid: true },
-  { kind: 'fridge', x: 20, y: 1, w: 1, h: 1, solid: true },
-  { kind: 'shelf', x: 20, y: 3, w: 1, h: 1, solid: true },
-  { kind: 'table', x: 15, y: 5, w: 2, h: 1, solid: true },
+  { kind: 'fridge', tall: true, x: 20, y: 1, w: 1, h: 1, solid: true },
+  { kind: 'shelf', tall: true, x: 20, y: 3, w: 1, h: 1, solid: true },
+  { kind: 'table', tall: true, x: 15, y: 5, w: 2, h: 1, solid: true },
   // Bedroom
-  { kind: 'bed', x: 28, y: 1, w: 4, h: 3, solid: true },
+  { kind: 'bed', tall: true, x: 28, y: 1, w: 4, h: 3, solid: true },
   { kind: 'nightstand', x: 32, y: 1, w: 1, h: 1, solid: true },
   { kind: 'nightstand', x: 27, y: 1, w: 1, h: 1, solid: true },
-  { kind: 'shelf', x: 23, y: 1, w: 2, h: 1, solid: true },
+  { kind: 'shelf', tall: true, x: 23, y: 1, w: 2, h: 1, solid: true },
   // Bathroom
   { kind: 'toilet', x: 1, y: 14, w: 1, h: 1, solid: true },
-  { kind: 'tub', x: 6, y: 14, w: 3, h: 1, solid: true },
+  { kind: 'tub', tall: true, x: 6, y: 14, w: 3, h: 1, solid: true },
   // Laundry
-  { kind: 'washer', x: 11, y: 14, w: 1, h: 1, solid: true },
-  { kind: 'dryer', x: 12, y: 14, w: 1, h: 1, solid: true },
+  { kind: 'washer', tall: true, x: 11, y: 14, w: 1, h: 1, solid: true },
+  { kind: 'dryer', tall: true, x: 12, y: 14, w: 1, h: 1, solid: true },
   { kind: 'litter', x: 20, y: 17, w: 1, h: 1, solid: false },
-  { kind: 'shelf', x: 21, y: 14, w: 1, h: 1, solid: true },
+  { kind: 'shelf', tall: true, x: 21, y: 14, w: 1, h: 1, solid: true },
   // Office
-  { kind: 'desk', x: 28, y: 14, w: 3, h: 1, solid: true },
+  { kind: 'desk', tall: true, x: 28, y: 14, w: 3, h: 1, solid: true },
   { kind: 'chair', x: 29, y: 15, w: 1, h: 1, solid: true },
-  { kind: 'shelf', x: 23, y: 14, w: 2, h: 1, solid: true },
-  { kind: 'plant', x: 34, y: 14, w: 1, h: 1, solid: true },
+  { kind: 'shelf', tall: true, x: 23, y: 14, w: 2, h: 1, solid: true },
+  { kind: 'plant', tall: true, x: 34, y: 14, w: 1, h: 1, solid: true },
 ];
+
+const TALL = new Set<string>();
+for (const f of FURNITURE) if (f.tall) for (let y = f.y; y < f.y + f.h; y++) for (let x = f.x; x < f.x + f.w; x++) TALL.add(x + ',' + y);
+/** walls and tall furniture block sight */
+export function blocksSight(tx: number, ty: number): boolean { return isWall(tx, ty) || TALL.has(tx + ',' + ty); }
 
 export function isSolid(tx: number, ty: number): boolean {
   if (isWall(tx, ty)) return true;
@@ -129,9 +136,12 @@ export const HUMAN_ROUTES: Record<string, Waypoint[]> = {
     { x: 5.5, y: 11.5 }, { x: 5.5, y: 7.5 }, { x: 8.5, y: 7.5 }, { x: 8.5, y: 4.5, wait: 1 }, { x: 8.5, y: 7.5 }, { x: 5.5, y: 7.5 }, { x: 5.5, y: 11.5 },
     { x: 4.5, y: 11.5 }, { x: 4.5, y: 14.5, wait: 1 }, { x: 4.5, y: 11.5 },
     ...BACK_TO_BED],
-  // the scheduled midnight bathroom trip
+  // midnight errands: a pee break, or a snack from the fridge
   bathroom: [...OUT_OF_BED,
     { x: 4.5, y: 11.5 }, { x: 4.5, y: 15.5, wait: 5 }, { x: 4.5, y: 11.5 },
+    ...BACK_TO_BED],
+  snack: [...OUT_OF_BED,
+    { x: 18.5, y: 11.5 }, { x: 18.5, y: 2.5 }, { x: 19.5, y: 2.5, wait: 4 }, { x: 18.5, y: 2.5 }, { x: 18.5, y: 11.5 },
     ...BACK_TO_BED],
 };
 /** kept for scripts that import the old name */
@@ -161,7 +171,7 @@ export function makeObjects(): ObjectState[] {
   ];
 }
 
-/** Bresenham line of sight on the tile grid. Walls (not furniture) block. */
+/** Bresenham line of sight on the tile grid. Walls and tall furniture block; the end tiles never do. */
 export function hasLOS(x0: number, y0: number, x1: number, y1: number): boolean {
   let ax = Math.floor(x0), ay = Math.floor(y0);
   const bx = Math.floor(x1), by = Math.floor(y1);
@@ -170,7 +180,7 @@ export function hasLOS(x0: number, y0: number, x1: number, y1: number): boolean 
   let err = dx + dy;
   for (;;) {
     if (ax === bx && ay === by) return true;
-    if (isWall(ax, ay) && !(ax === Math.floor(x0) && ay === Math.floor(y0))) return false;
+    if (blocksSight(ax, ay) && !(ax === Math.floor(x0) && ay === Math.floor(y0))) return false;
     const e2 = 2 * err;
     if (e2 >= dy) { err += dy; ax += sx; }
     if (e2 <= dx) { err += dx; ay += sy; }

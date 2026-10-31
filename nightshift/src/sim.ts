@@ -21,7 +21,7 @@ export const BAL = {
   deepSleepSeconds: 15,          // after the human lies back down the drain doubles for this long
   deepSleepResetTo: 20,          // and the meter drops to at most this
   stirAt: 35, patrolAt: 60, sleepBelow: 25, keepPatrollingAbove: 45,
-  scheduledTripWindow: [100, 160] as [number, number], // once per round the human gets up anyway
+  errand: { firstWindow: [60, 120] as [number, number], gap: [40, 80] as [number, number], max: 3, snackChance: 0.5 }, // midnight trips regardless of noise
   human: { walk: 2.6, hunt: 3.4, sprayRange: 3.2, huntSprayRange: 4.5, sprayCooldown: 1.5 },
   spray: { chaos: 20, huntChaos: 25, dominance: 5, stun: 3, suspicionFloor: 50 },
   bust: { chaosMultiplier: 0.8, resetTo: 85, afterHunt: 40 },
@@ -68,8 +68,9 @@ export class Sim {
   private usedObjectives = new Set<string>();
   private ventSince = 0;
   private deepSleepUntil = 0;
-  private scheduledTripAt = 0;
-  private tripAnnounced = false;
+  private nextErrandAt = 0;
+  private errandAnnounced = false;
+  private errands = 0;
   private lastMoved = new Map<string, number>();
 
   constructor(private send: (pid: string, m: HostMsg) => void, private broadcast: (m: HostMsg) => void) {}
@@ -137,8 +138,8 @@ export class Sim {
     this.ventOccupant = null; this.log = []; this.endReason = undefined;
     this.departed = []; this.dropped.clear(); this.usedObjectives.clear(); this.board = 0;
     this.pending.clear(); this.pairs.clear(); this.shoveCd.clear(); this.lickCd.clear(); this.lastMoved.clear();
-    this.deepSleepUntil = 0; this.tripAnnounced = false;
-    this.scheduledTripAt = rnd(BAL.scheduledTripWindow[0], BAL.scheduledTripWindow[1]);
+    this.deepSleepUntil = 0; this.errandAnnounced = false; this.errands = 0;
+    this.nextErrandAt = rnd(BAL.errand.firstWindow[0], BAL.errand.firstWindow[1]);
     let i = 0;
     for (const p of this.players.values()) {
       Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0 });
@@ -475,6 +476,11 @@ export class Sim {
       this.logEv('The human is snoring. Go.', 'good');
       this.broadcast({ t: 'toast', text: 'The human is snoring. Go go go.', kind: 'good' });
     }
+    // maybe another errand later in the night
+    if (this.errands < BAL.errand.max && this.nextErrandAt === 0) {
+      const at = this.time + rnd(BAL.errand.gap[0], BAL.errand.gap[1]);
+      if (at < ROUND_SECONDS - 25) this.nextErrandAt = at;
+    }
   }
   private pickRoute(): keyof typeof HUMAN_ROUTES {
     const r = Math.random();
@@ -485,12 +491,13 @@ export class Sim {
     const h = this.human;
     h.sprayCd = Math.max(0, h.sprayCd - dt);
     const B = BAL;
-    // the scheduled trip: once per round the human gets up no matter how quiet it is
-    if (h.phase === 'asleep' || h.phase === 'stirring') {
-      if (!this.tripAnnounced && this.time >= this.scheduledTripAt - 5) { this.tripAnnounced = true; this.logEv('You hear the bed creak…', 'bad'); }
-      if (this.tripAnnounced && this.time >= this.scheduledTripAt && this.scheduledTripAt > 0) {
-        this.scheduledTripAt = 0;
-        this.wake('bathroom', 'patrol', 'FOOTSTEPS. The human is up for the bathroom. Hide.');
+    // midnight errands: the first is guaranteed, later ones are random, none depend on noise
+    if ((h.phase === 'asleep' || h.phase === 'stirring') && this.nextErrandAt > 0) {
+      if (!this.errandAnnounced && this.time >= this.nextErrandAt - 5) { this.errandAnnounced = true; this.logEv('You hear the bed creak…', 'bad'); }
+      if (this.time >= this.nextErrandAt) {
+        this.nextErrandAt = 0; this.errandAnnounced = false; this.errands++;
+        const snack = Math.random() < BAL.errand.snackChance;
+        this.wake(snack ? 'snack' : 'bathroom', 'patrol', snack ? 'FOOTSTEPS. The human wants a midnight snack. Stay out of the kitchen.' : 'FOOTSTEPS. The human is up for a pee break. Hide.');
         return;
       }
     }

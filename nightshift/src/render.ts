@@ -74,7 +74,7 @@ export class Renderer {
     // furniture
     for (const f of FURNITURE) {
       const x = f.x * TILE, y = f.y * TILE, w = f.w * TILE, h = f.h * TILE;
-      c.fillStyle = 'rgba(0,0,0,0.25)'; c.fillRect(x + 3, y + 5, w, h);
+      c.fillStyle = f.tall ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.25)'; c.fillRect(x + (f.tall ? 5 : 3), y + (f.tall ? 8 : 5), w, h);
       c.fillStyle = FURN_COLORS[f.kind];
       roundRect(c, x + 2, y + 2, w - 4, h - 4, 6); c.fill();
       c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(x + 4, y + 4, w - 8, 4);

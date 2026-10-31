@@ -370,6 +370,25 @@ export class Renderer {
       ctx.fillText(e.text, 24 * z, H - (logBase + 16 + (recent.length - 1 - i) * 24) * z);
     });
 
+    // key legend (keyboard players)
+    if (!v.touch) {
+      const items: [string, string][] = [['WASD', 'move'], ['E', 'paw / interact'], ['H', 'how to play']];
+      ctx.font = `${11 * z}px system-ui, sans-serif`;
+      let total = 0; const widths = items.map(([k, t]) => { const kw = Math.max(26 * z, ctx.measureText(k).width + 12 * z); const tw = ctx.measureText(t).width; total += kw + 6 * z + tw + 16 * z; return [kw, tw]; });
+      let x = W - 14 * z - total;
+      const y = H - 22 * z;
+      ctx.fillStyle = 'rgba(8,6,16,0.7)'; roundRect(ctx, x - 10 * z, y - 16 * z, total + 14 * z, 26 * z, 8 * z); ctx.fill();
+      items.forEach(([k, t], i) => {
+        const [kw, tw] = widths[i];
+        ctx.fillStyle = '#2a2340'; roundRect(ctx, x, y - 12 * z, kw, 18 * z, 4 * z); ctx.fill();
+        ctx.strokeStyle = '#6b5f8a'; ctx.lineWidth = 1 * z; roundRect(ctx, x, y - 12 * z, kw, 18 * z, 4 * z); ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = `bold ${10 * z}px ui-monospace, Menlo, monospace`; ctx.fillText(k, x + kw / 2, y + 1 * z);
+        x += kw + 6 * z;
+        ctx.fillStyle = '#bbb'; ctx.textAlign = 'left'; ctx.font = `${11 * z}px system-ui, sans-serif`; ctx.fillText(t, x, y + 1 * z);
+        x += tw + 16 * z;
+      });
+      ctx.textAlign = 'left';
+    }
     // prompt
     if (v.prompt) {
       const py = v.touch ? H - 150 * z : H - 70 * z;

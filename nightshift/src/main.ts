@@ -185,7 +185,11 @@ class Client {
           else this.others.set(p.id, { x: p.x, y: p.y, tx: p.x, ty: p.y, dir: p.dir, moving: p.moving, phase: 0 });
         }
         for (const id of [...this.others.keys()]) if (!m.s.players.some(p => p.id === id)) this.others.delete(id);
-        if (m.s.phase === 'playing' && this.screen !== 'playing') { this.screen = 'playing'; ui.innerHTML = ''; this.minigame = null; }
+        if (m.s.phase === 'playing' && this.screen !== 'playing') {
+          this.screen = 'playing'; ui.innerHTML = ''; this.minigame = null;
+          let seen = false; try { seen = !!localStorage.getItem('ns-help-seen'); } catch { /* ignore */ }
+          if (!seen) showHelp(true);
+        }
         if (m.s.phase === 'results' && this.screen !== 'results') { this.screen = 'results'; this.minigame = null; renderResults(this); }
         if (prev && m.s.log.length) {
           // surface new log lines as toasts only for important ones
@@ -211,6 +215,7 @@ class Client {
       if (o.moving) o.phase += dt * 14;
     }
     if (this.screen !== 'playing' || !this.snap) return;
+    if (helpOpen) { this.moving = false; return; }
     if (!this.isHost && !this.reconnecting && this.lastSnapAt && this.now - this.lastSnapAt > 10) { this.link.onClose?.('no updates from host for 10s'); return; }
     const me = this.me;
     const stunned = me ? this.snap.time < me.stunnedUntil : false;
@@ -413,11 +418,13 @@ function renderLobby(c: Client) {
       <div class="cats" id="cats"></div>
       <div class="row" style="margin-top:18px">
         ${c.isHost ? '<button id="start">Start the night shift</button>' : '<button disabled>Host starts the shift</button>'}
+        <button id="howto" class="secondary">How to play</button>
         <button id="leave" class="secondary">Leave</button>
       </div>
       ${logPanel()}
     </div>`;
   wireLogPanel();
+  (ui.querySelector('#howto') as HTMLButtonElement).onclick = () => showHelp(false);
   const pl = ui.querySelector('#players')!;
   for (const p of c.lobby) {
     const el = document.createElement('div'); el.className = 'player';
@@ -466,6 +473,53 @@ function renderResults(c: Client) {
   if (again) again.onclick = () => c.send({ t: 'again' });
   (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
 }
+
+function helpHtml(touch: boolean) {
+  const k = (t: string) => `<span class="kbd">${t}</span>`;
+  return `
+    <h1>HOW TO PLAY <small>Four cats. One sleeping human. Cause problems together.</small></h1>
+    <h2>Goal</h2>
+    <p class="hint">Rack up <b>Chaos</b> as a team before the sun comes up. Finish the objectives on the right for bonus points. Noise fills the
+    <b>Suspicion</b> bar; past the second line the human gets up with a spray bottle. Being sprayed costs points and dumps you by the litter box.
+    If the bar fills completely the lights come on and the human hunts. Twice, and the shift is over.</p>
+    <h2>Controls</h2>
+    <div class="controls">
+      ${touch ? '<div>Left thumb: drag the stick to move</div><div>PAW button: interact with whatever the prompt names</div>'
+             : `<div>${k('W')} ${k('A')} ${k('S')} ${k('D')} or arrows: move</div><div>${k('E')} or ${k('Space')}: interact with whatever the prompt names</div>`}
+      <div>${touch ? 'Buttons appear for each minigame' : k('H') + ': this screen'}</div><div>Minigames show their keys before they start</div>
+    </div>
+    <h2>Minigames</h2>
+    <div class="controls">
+      <div><b>Knock things off</b>: ${touch ? 'tap' : k('Space')} when the paw is in the green. Centre is quiet, edges crash, a miss drops nothing.</div>
+      <div><b>Hairball / toilet paper</b>: ${touch ? 'MASH, then LET GO' : 'mash ' + k('Space') + ', press ' + k('E')} while the bar is in the green.</div>
+      <div><b>Treat cabinet / drawers</b>: ${touch ? 'tap' : k('Space')} in the green for each latch. A friend nearby makes it easier.</div>
+      <div><b>Zoomies</b>: press the arrows in order, fast.</div>
+      <div><b>Staring contest</b>: press nothing at all for six seconds. It will bait you.</div>
+      <div><b>Grooming</b>: stand next to a teammate who is holding still. Groomer taps the beat; the groomed cat leans ${touch ? '◀ ▶' : k('A') + ' ' + k('D')} to keep their head in the green.</div>
+    </div>
+    <h2>Hiding</h2>
+    <p class="hint">The human sprays what they can see within a few tiles. Walls and big furniture block their view. Duck behind the couch, the kitchen table or the fridge, and stay out of the hallway when you hear footsteps. Each cat also has a special: Dorian climbs counters, Ginny opens drawers, Melon leaves presents, Bean eats the human's snack.</p>`;
+}
+let helpOpen = false;
+function showHelp(fromGame: boolean) {
+  helpOpen = true;
+  ui.innerHTML = `<div class="panel">${helpHtml(input.touch)}<div class="row" style="margin-top:18px"><button id="help-close">${fromGame ? 'Back to the shift' : 'Got it'}</button></div></div>`;
+  (ui.querySelector('#help-close') as HTMLButtonElement).onclick = hideHelp;
+  try { localStorage.setItem('ns-help-seen', '1'); } catch { /* ignore */ }
+}
+function hideHelp() {
+  helpOpen = false;
+  if (!client) { renderMenu(); return; }
+  if (client.screen === 'lobby') renderLobby(client);
+  else if (client.screen === 'results') renderResults(client);
+  else ui.innerHTML = '';
+}
+addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'h' || e.repeat) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (helpOpen) hideHelp(); else showHelp(client?.screen === 'playing');
+});
 
 function logPanel() {
   return `<details class="diag" id="diag"><summary>Connection log (${diagLines().length} lines)</summary>

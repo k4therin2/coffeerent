@@ -3,14 +3,24 @@ import type { Input } from './input';
 
 export interface MgResult { success: boolean; quality: number; timedOut?: boolean }
 
+/** seconds of "GET READY" with the controls on screen before a minigame's clock starts */
+export const READY = 1.4;
+export interface KeyCap { kb: string; touch: string; what: string }
+
 export abstract class Minigame {
+  /** seconds since the minigame became active (after the ready beat) */
   elapsed = 0;
+  /** seconds since the panel appeared */
+  shown = 0;
   result: MgResult | null = null;
   flash = 0; // feedback flash timer
   flashColor = '#fff';
   constructor(public spec: MinigameSpec) {}
+  get ready() { return this.shown < READY; }
   update(dt: number, input: Input) {
-    this.elapsed += dt; this.flash = Math.max(0, this.flash - dt);
+    this.shown += dt; this.flash = Math.max(0, this.flash - dt);
+    if (this.ready) return;
+    this.elapsed += dt;
     if (this.result) return;
     this.step(dt, input);
     if (!this.result && this.elapsed >= this.spec.time) { this.result = this.timeout(); this.result.timedOut = true; }
@@ -18,6 +28,8 @@ export abstract class Minigame {
   protected abstract step(dt: number, input: Input): void;
   protected timeout(): MgResult { return { success: false, quality: 0 }; }
   abstract draw(ctx: CanvasRenderingContext2D, w: number, h: number): void;
+  /** the controls, shown as key caps during GET READY and under the title */
+  abstract keys(): KeyCap[];
   get timeLeft() { return Math.max(0, this.spec.time - this.elapsed); }
   protected ping(c: string) { this.flash = 0.25; this.flashColor = c; }
 }
@@ -30,20 +42,57 @@ const K = (kb: string, touch: string) => hints.touch ? touch : kb;
 const LENIENCY = () => hints.touch ? 1.3 : 1;
 
 // ---- shared drawing helpers ----
-function panel(ctx: CanvasRenderingContext2D, w: number, h: number, title: string, hint: string, timeLeft: number) {
-  const pw = Math.min(560, w - 40), ph = 260;
+function keycap(ctx: CanvasRenderingContext2D, x: number, y: number, label: string, size = 15): number {
+  ctx.font = `bold ${size}px ui-monospace, Menlo, monospace`;
+  const w = Math.max(size * 1.9, ctx.measureText(label).width + size * 0.9), h = size * 1.75;
+  ctx.fillStyle = '#2a2340'; roundRect(ctx, x, y - h * 0.72, w, h, 6); ctx.fill();
+  ctx.strokeStyle = '#6b5f8a'; ctx.lineWidth = 1.5; roundRect(ctx, x, y - h * 0.72, w, h, 6); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(label, x + w / 2, y + size * 0.1);
+  return w;
+}
+/** draws "[KEY] what   [KEY] what" centred at (cx, y); returns nothing */
+function keyRow(ctx: CanvasRenderingContext2D, cx: number, y: number, keys: KeyCap[], size: number) {
+  // measure
+  const parts = keys.map(k => { const label = hints.touch ? k.touch : k.kb; ctx.font = `bold ${size}px ui-monospace, Menlo, monospace`; const kw = Math.max(size * 1.9, ctx.measureText(label).width + size * 0.9); ctx.font = `${size}px system-ui, sans-serif`; const tw = ctx.measureText(k.what).width; return { label, kw, tw, what: k.what }; });
+  const gap = size * 0.6, sep = size * 1.6;
+  const total = parts.reduce((a, p) => a + p.kw + gap + p.tw, 0) + sep * (parts.length - 1);
+  let x = cx - total / 2;
+  for (const p of parts) {
+    keycap(ctx, x, y, p.label, size); x += p.kw + gap;
+    ctx.fillStyle = '#ddd'; ctx.font = `${size}px system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.fillText(p.what, x, y); x += p.tw + sep;
+  }
+  ctx.textAlign = 'center';
+}
+function panel(ctx: CanvasRenderingContext2D, w: number, h: number, mg: Minigame, hint: string) {
+  const pw = Math.min(560, w - 40), ph = 280;
   const x = (w - pw) / 2, y = (h - ph) / 2;
-  ctx.fillStyle = 'rgba(10,8,20,0.92)';
+  ctx.fillStyle = 'rgba(10,8,20,0.94)';
   roundRect(ctx, x, y, pw, ph, 14); ctx.fill();
   ctx.strokeStyle = '#f4c95d'; ctx.lineWidth = 2; roundRect(ctx, x, y, pw, ph, 14); ctx.stroke();
   ctx.fillStyle = '#f4c95d'; ctx.font = 'bold 20px system-ui, sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText(title, w / 2, y + 34);
-  ctx.fillStyle = '#bbb'; ctx.font = '14px system-ui, sans-serif';
-  ctx.fillText(hint, w / 2, y + ph - 18);
+  ctx.fillText(mg.spec.title, w / 2, y + 32);
+  // controls row under the title, always visible
+  keyRow(ctx, w / 2, y + 62, mg.keys(), 13);
+  ctx.fillStyle = '#bbb'; ctx.font = '13px system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(hint, w / 2, y + ph - 16);
   // timer bar
-  ctx.fillStyle = '#333'; ctx.fillRect(x + 20, y + 46, pw - 40, 4);
-  ctx.fillStyle = '#e66'; ctx.fillRect(x + 20, y + 46, (pw - 40) * Math.max(0, timeLeft), 4);
-  return { x, y, pw, ph };
+  ctx.fillStyle = '#333'; ctx.fillRect(x + 20, y + 76, pw - 40, 4);
+  ctx.fillStyle = '#e66'; ctx.fillRect(x + 20, y + 76, (pw - 40) * Math.max(0, mg.ready ? 1 : mg.timeLeft / mg.spec.time), 4);
+  return { x, y: y + 30, pw, ph };
+}
+/** big GET READY card over the panel body during the lead-in */
+function readyOverlay(ctx: CanvasRenderingContext2D, w: number, h: number, mg: Minigame) {
+  if (!mg.ready) return false;
+  const pw = Math.min(560, w - 40), ph = 280;
+  const x = (w - pw) / 2, y = (h - ph) / 2;
+  ctx.fillStyle = 'rgba(10,8,20,0.97)'; roundRect(ctx, x + 12, y + 92, pw - 24, ph - 124, 10); ctx.fill();
+  const t = READY - mg.shown;
+  ctx.fillStyle = '#f4c95d'; ctx.font = 'bold 30px system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(t > 0.5 ? 'GET READY' : 'GO!', w / 2, y + 140);
+  keyRow(ctx, w / 2, y + 190, mg.keys(), 18);
+  ctx.fillStyle = '#333'; ctx.fillRect(x + 40, y + 215, pw - 80, 6);
+  ctx.fillStyle = '#8be28b'; ctx.fillRect(x + 40, y + 215, (pw - 80) * (1 - t / READY), 6);
+  return true;
 }
 export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
@@ -59,6 +108,7 @@ function resultBanner(ctx: CanvasRenderingContext2D, w: number, y: number, r: Mg
 // ---- swipe: timing bar ----
 export class Swipe extends Minigame {
   pos = 0; dirn = 1; zone = rnd(0.3, 0.7);
+  keys() { return [{ kb: 'SPACE', touch: 'TAP', what: 'when the paw is in the green' }]; }
   step(dt: number, input: Input) {
     const sp = Number(this.spec.params.speed);
     this.pos += this.dirn * sp * dt;
@@ -72,7 +122,7 @@ export class Swipe extends Minigame {
     }
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE in the green: dead centre is quiet, the edges are a crash. Miss and nothing falls.', 'TAP in the green: dead centre is quiet, the edges are a crash. Miss and nothing falls.'), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this, 'Dead centre is quiet. The yellow edges are a crash. Miss and nothing falls.');
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     const half = Number(this.spec.params.zone) * LENIENCY() / 2;
@@ -87,12 +137,14 @@ export class Swipe extends Minigame {
       else if (this.result.quality < crash) { ctx.fillStyle = '#f4c95d'; ctx.fillText('CRASH!', w / 2, by + 80); }
       else { ctx.fillStyle = '#8be28b'; ctx.fillText(this.result.quality > 0.8 ? 'PURRFECT' : 'THUNK', w / 2, by + 80); }
     }
+    readyOverlay(ctx, w, h, this);
   }
 }
 
 // ---- mash: fill then release ----
 export class Mash extends Minigame {
   v = 0;
+  keys() { const label = String(this.spec.params.label); return [{ kb: 'SPACE', touch: 'MASH', what: `mash to ${label}` }, { kb: 'E', touch: 'LET GO', what: 'let go in the green' }]; }
   step(dt: number, input: Input) {
     this.v = Math.max(0, this.v - 0.35 * dt);
     if (input.was(' ')) this.v = Math.min(1, this.v + 0.09);
@@ -108,7 +160,7 @@ export class Mash extends Minigame {
   protected timeout() { this.finish(); return this.result!; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
     const label = String(this.spec.params.label);
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K(`Mash SPACE to ${label}. Press E to let it go in the green.`, `MASH to ${label}. LET GO while it is in the green.`), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this, 'The bar sinks on its own. Fill it, then let go while it sits in the green.');
     const bx = x + 40, bw = pw - 80, by = y + 110;
     const t = Number(this.spec.params.target), wd = Number(this.spec.params.width);
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 40, 10); ctx.fill();
@@ -117,12 +169,14 @@ export class Mash extends Minigame {
     ctx.fillStyle = '#fff'; ctx.font = 'bold 22px system-ui, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(label + (this.v > 0.95 ? '!!!' : this.v > 0.6 ? '!!' : '!'), w / 2, by + 80);
     resultBanner(ctx, w, by + 115, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 
 // ---- pick: sequential pins ----
 export class Pick extends Minigame {
   pin = 0; pos = 0; dirn = 1; zone = rnd(0.25, 0.75); total = Number(this.spec.params.pins);
+  keys() { return [{ kb: 'SPACE', touch: 'TAP', what: `in the green, ${this.total} latch${this.total > 1 ? 'es' : ''}` }]; }
   step(dt: number, input: Input) {
     const sp = Number(this.spec.params.speed) * (1 + this.pin * 0.15);
     this.pos += this.dirn * sp * dt;
@@ -135,7 +189,7 @@ export class Pick extends Minigame {
     }
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE in the green for each latch. A teammate nearby halves the latches.', 'TAP in the green for each latch. A teammate nearby halves the latches.'), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this, 'A miss loses a latch. A teammate standing nearby makes it easier.');
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - 0.1 * LENIENCY()) * bw, by, 0.2 * LENIENCY() * bw, 26);
@@ -145,6 +199,7 @@ export class Pick extends Minigame {
       ctx.beginPath(); ctx.arc(w / 2 + (i - (this.total - 1) / 2) * 30, by - 40, 9, 0, Math.PI * 2); ctx.fill();
     }
     resultBanner(ctx, w, by + 80, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 
@@ -155,6 +210,7 @@ const WASD: Record<string, string> = { w: 'arrowup', s: 'arrowdown', a: 'arrowle
 export class Zoomies extends Minigame {
   seq = Array.from({ length: Number(this.spec.params.count) }, () => ARROWS[Math.floor(Math.random() * 4)]);
   idx = 0; hits = 0;
+  keys() { return [{ kb: '↑ ↓ ← →', touch: 'ARROWS', what: 'press each arrow in order' }, { kb: 'W A S D', touch: '', what: 'also works' }].filter(k => k.touch !== '' || !hints.touch); }
   step(_dt: number, input: Input) {
     for (const k of input.pressed) {
       const key = WASD[k] ?? k;
@@ -166,7 +222,7 @@ export class Zoomies extends Minigame {
   }
   protected timeout() { const q = this.hits / this.seq.length; return { success: q >= 0.5, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { y, pw } = panel(ctx, w, h, this.spec.title, K('Hit the arrows (or WASD) in order. Fast. Every step wakes the house a little.', 'Tap the arrows in order. Fast. Every step wakes the house a little.'), this.timeLeft / this.spec.time);
+    const { y, pw } = panel(ctx, w, h, this, 'Fast. A wrong press skips that step. Every step wakes the house a little.');
     ctx.font = 'bold 40px system-ui, sans-serif'; ctx.textAlign = 'center';
     const start = Math.max(0, this.idx - 1);
     const visible = Math.max(3, Math.floor((pw / 2 - 40) / 56));
@@ -178,6 +234,7 @@ export class Zoomies extends Minigame {
     ctx.fillStyle = '#aaa'; ctx.font = '16px system-ui, sans-serif';
     ctx.fillText(`${this.hits} / ${this.seq.length}`, w / 2, y + 190);
     resultBanner(ctx, w, y + 225, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 
@@ -185,6 +242,7 @@ export class Zoomies extends Minigame {
 const BAITS = ['PRESS SPACE NOW', '[E] continue', 'press any key', 'QUICK! SPACE!', 'tap W to win', 'DO IT. PRESS IT.'];
 export class Stare extends Minigame {
   bait = ''; baitT = 0; nextBait = 0.8;
+  keys() { return [{ kb: 'NOTHING', touch: 'NO TOUCH', what: 'press nothing for 6 seconds' }]; }
   step(dt: number, input: Input) {
     if (input.anyPressed && this.elapsed > 0.4) { this.result = { success: false, quality: 0 }; this.ping('#ff7b7b'); return; }
     this.baitT -= dt; this.nextBait -= dt;
@@ -192,7 +250,7 @@ export class Stare extends Minigame {
     if (this.elapsed >= Number(this.spec.params.hold)) this.result = { success: true, quality: 1 };
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { y, x, pw } = panel(ctx, w, h, this.spec.title, K('Do NOT press anything. Anything. The neighbor cat is trying to bait you.', 'Do NOT touch the screen. At all. The neighbor cat is trying to bait you.'), this.timeLeft / this.spec.time);
+    const { y, x, pw } = panel(ctx, w, h, this, K('Any key at all and you blink first. The neighbor cat will try to bait you.', 'Any touch at all and you blink first. The neighbor cat will try to bait you.'));
     // eyes
     for (const ex of [-50, 50]) {
       ctx.fillStyle = '#f2d14f'; ctx.beginPath(); ctx.ellipse(w / 2 + ex, y + 120, 34, 22, 0, 0, Math.PI * 2); ctx.fill();
@@ -206,6 +264,7 @@ export class Stare extends Minigame {
       ctx.fillText(this.bait, w / 2 + rnd(-2, 2), y + 205 + rnd(-2, 2));
     }
     resultBanner(ctx, w, y + 212, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 
@@ -223,6 +282,7 @@ function tick(freq: number) {
 export class Rhythm extends Minigame {
   beats = Number(this.spec.params.beats); period = 60 / Number(this.spec.params.bpm); lead = 1.0;
   hits = 0; judged = new Set<number>(); misses = 0; ticked = -1;
+  keys() { return [{ kb: 'SPACE', touch: 'TAP', what: 'on each beat as it crosses the line' }]; }
   step(_dt: number, input: Input) {
     const t = this.elapsed - this.lead;
     const beatNow = Math.floor(t / this.period + 0.5);
@@ -236,7 +296,7 @@ export class Rhythm extends Minigame {
   }
   protected timeout() { const q = this.hits / this.beats; return { success: q >= 0.7, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE on each beat as it crosses the line. Lick lick lick.', 'TAP on each beat as it crosses the line. Lick lick lick.'), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this, 'Listen for the tick. Six of eight licks need to land.');
     const lineX = x + 80, by = y + 125, speed = 120;
     const t = this.elapsed - this.lead;
     ctx.fillStyle = '#333'; ctx.fillRect(x + 30, by - 2, pw - 60, 4);
@@ -250,12 +310,14 @@ export class Rhythm extends Minigame {
     ctx.fillStyle = '#aaa'; ctx.font = '16px system-ui, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(`${this.hits} / ${this.beats} licks landed`, w / 2, by + 60);
     resultBanner(ctx, w, by + 95, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 
 // ---- balance: lickee ----
 export class Balance extends Minigame {
   pos = 0; vel = 0; inZone = 0; sampled = 0;
+  keys() { return [{ kb: 'A', touch: '◀', what: 'lean left' }, { kb: 'D', touch: '▶', what: 'lean right' }]; }
   step(dt: number, input: Input) {
     const drift = Number(this.spec.params.drift) / LENIENCY();
     this.vel += (Math.random() - 0.5) * drift * dt * 6 + Math.sign(this.pos) * drift * dt * 0.8;
@@ -269,7 +331,7 @@ export class Balance extends Minigame {
   }
   protected timeout() { const q = this.inZone / Math.max(0.01, this.sampled); return { success: q >= 0.6, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('A / D to keep your head in the green. Do not squirm.', 'Hold ◀ ▶ to keep your head in the green. Do not squirm.'), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this, 'Your head drifts. Tap against the drift to keep it in the green for most of the time.');
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + bw * (0.5 - 0.14), by, bw * 0.28, 26);
@@ -279,6 +341,7 @@ export class Balance extends Minigame {
     ctx.fillStyle = '#aaa'; ctx.font = '16px system-ui, sans-serif';
     ctx.fillText(`${Math.round(q * 100)}% still`, w / 2, by + 70);
     resultBanner(ctx, w, by + 105, this.result);
+    readyOverlay(ctx, w, h, this);
   }
 }
 

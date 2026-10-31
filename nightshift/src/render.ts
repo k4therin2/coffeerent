@@ -142,7 +142,7 @@ export class Renderer {
       // human
       const h = snap.human;
       if (h.phase === 'asleep' || h.phase === 'stirring') {
-        if (seen(h.x, h.y) > 0.02) { const [sx, sy] = toScreen(h.x, h.y - 0.6); drawHuman(ctx, sx, sy, z32, 'down', v.now, false); }
+        if (seen(h.x, h.y) > 0.02) { const [sx, sy] = toScreen(h.x, h.y); drawHuman(ctx, sx, sy, z32, "down", v.now, false); }
       } else if (seen(h.x, h.y) > 0.02) {
         const [sx, sy] = toScreen(h.x, h.y);
         // flashlight glow

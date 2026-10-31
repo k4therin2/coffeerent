@@ -123,11 +123,20 @@ export function drawHuman(ctx: CanvasRenderingContext2D, cx: number, cy: number,
   const s = size / 32;
   ctx.save(); ctx.translate(cx, cy);
   if (!awake) {
-    // lump under the blanket
-    ctx.fillStyle = '#6b5a8a';
-    ctx.beginPath(); ctx.ellipse(0, 0, 14 * s, 26 * s, 0, 0, Math.PI * 2); ctx.fill();
+    // lump under the blanket, with a little arm sticking out
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath(); ctx.ellipse(2 * s, 4 * s, 17 * s, 28 * s, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#9a86c4';
+    ctx.beginPath(); ctx.ellipse(0, 2 * s, 17 * s, 28 * s, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#6b5a8a'; ctx.lineWidth = 1.5 * s; ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1 * s;
+    for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(-14 * s, i * 9 * s + 4 * s); ctx.quadraticCurveTo(0, i * 9 * s, 14 * s, i * 9 * s + 4 * s); ctx.stroke(); }
     ctx.fillStyle = '#f0c8a8';
-    ctx.beginPath(); ctx.arc(0, -24 * s, 7 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -26 * s, 7.5 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a2a22';
+    ctx.beginPath(); ctx.arc(0, -29 * s, 7.5 * s, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#f0c8a8';
+    ctx.beginPath(); ctx.ellipse(16 * s, -4 * s, 4 * s, 9 * s, 0.4, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.font = `${10 * s}px monospace`;
     ctx.fillText('z', 10 * s + Math.sin(phase) * 2 * s, -30 * s - (phase % 3) * 4 * s);
     ctx.restore(); return;

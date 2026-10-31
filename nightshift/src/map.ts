@@ -102,7 +102,7 @@ export const CAT_BED = { x: 1.5, y: 7.5 };
 /** spawn row: living room row 5 is clear of furniture */
 export const SPAWNS = [0, 1, 2, 3].map(i => ({ x: 1.5 + i * 0.9, y: 5.5 }));
 export const MOUSE_SPAWN = { x: 15.5, y: 17.5 };
-export const HUMAN_BED = { x: 29.5, y: 4.6 };
+export const HUMAN_BED = { x: 29.5, y: 2.5 };
 /** axis-aligned patrol loop for the human, all through doors */
 export const HUMAN_PATROL: { x: number; y: number }[] = [
   { x: 29.5, y: 6.5 }, { x: 23.5, y: 6.5 }, { x: 23.5, y: 11.5 },

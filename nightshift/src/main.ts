@@ -1,0 +1,388 @@
+import type Peer from 'peerjs';
+import { CAT_BLURB, CAT_IDS, CAT_NAMES, type CatId, type ClientMsg, type Dir, type HostMsg, type Snapshot } from './types';
+import { Sim } from './sim';
+import { hostRoom, joinRoom, loopback, randomCode, type ClientLink, type HostLink } from './net';
+import { Renderer, type LocalView } from './render';
+import { Input } from './input';
+import { makeMinigame, type Minigame } from './minigames';
+import { drawCat } from './cats';
+import { isSolid } from './map';
+
+const ui = document.getElementById('ui')!;
+const canvas = document.getElementById('game') as HTMLCanvasElement;
+const renderer = new Renderer(canvas);
+const input = new Input();
+addEventListener('resize', () => renderer.resize());
+renderer.resize();
+
+const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
+
+// =====================================================================
+// HOST
+// =====================================================================
+class Host {
+  sim: Sim;
+  links = new Map<string, ClientLink>();
+  peer: Peer | null = null;
+  offline = false;
+  private timer = 0;
+  private snapAcc = 0;
+  constructor(public code: string) {
+    this.sim = new Sim((pid, m) => this.links.get(pid)?.send(m), (m) => { for (const l of this.links.values()) l.send(m); });
+  }
+  async listen() {
+    try { this.peer = await hostRoom(this.code, (c) => this.attach(c)); }
+    catch (e) { console.warn('PeerJS unavailable, offline solo mode', e); this.offline = true; }
+    let last = performance.now();
+    this.timer = window.setInterval(() => {
+      const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
+      this.sim.tick(dt);
+      this.snapAcc += dt;
+      if (this.sim.phase !== 'lobby' && this.snapAcc >= 1 / 12) {
+        this.snapAcc = 0;
+        const m: HostMsg = { t: 'snap', s: this.sim.snapshot() };
+        for (const l of this.links.values()) l.send(m);
+      }
+    }, 1000 / 30);
+  }
+  attach(link: ClientLink) {
+    link.onMessage = (m: ClientMsg) => {
+      if (m.t === 'hello') {
+        if (this.sim.phase !== 'lobby') { link.send({ t: 'reject', reason: 'That room is mid-shift. Wait for the round to end.' }); return; }
+        this.links.set(link.id, link);
+        link.send({ t: 'welcome', id: link.id, code: this.code });
+        const p = this.sim.addPlayer(link.id, m.name, m.cat);
+        if (!p) { this.links.delete(link.id); link.send({ t: 'reject', reason: 'Room is full (4 cats max).' }); return; }
+        return;
+      }
+      if (m.t === 'start') { if (link.id === 'host' && this.sim.phase === 'lobby' && this.sim.players.size > 0) this.sim.start(); return; }
+      if (m.t === 'again') { if (link.id === 'host' && this.sim.phase === 'results') this.sim.backToLobby(); return; }
+      this.sim.handle(link.id, m);
+    };
+    link.onClose = () => { this.links.delete(link.id); this.sim.removePlayer(link.id); };
+  }
+}
+
+// =====================================================================
+// CLIENT
+// =====================================================================
+interface Other { x: number; y: number; tx: number; ty: number; dir: Dir; moving: boolean; phase: number }
+
+class Client {
+  id = '';
+  snap: Snapshot | null = null;
+  lobby: { id: string; name: string; cat: CatId; host: boolean }[] = [];
+  screen: 'connecting' | 'lobby' | 'playing' | 'results' = 'connecting';
+  x = 3; y = 6; dir: Dir = 'down'; moving = false; walkPhase = 0;
+  others = new Map<string, Other>();
+  minigame: Minigame | null = null;
+  toasts: { text: string; kind: string; until: number }[] = [];
+  now = 0;
+  private posAcc = 0;
+  error = '';
+
+  constructor(public link: HostLink, public name: string, public cat: CatId, public isHost: boolean, public code: string, public offline: boolean) {
+    link.onMessage = (m) => this.onMessage(m);
+    link.onClose = (r) => { this.error = 'Lost connection to the host (' + r + ').'; this.screen = 'connecting'; renderMenu(this.error); };
+    link.send({ t: 'hello', name, cat });
+  }
+  send(m: ClientMsg) { this.link.send(m); }
+
+  onMessage(m: HostMsg) {
+    switch (m.t) {
+      case 'welcome': this.id = m.id; break;
+      case 'reject': this.error = m.reason; renderMenu(m.reason); break;
+      case 'lobby':
+        this.lobby = m.players;
+        if (this.screen !== 'playing') { this.screen = 'lobby'; renderLobby(this); }
+        break;
+      case 'snap': {
+        const prev = this.snap;
+        this.snap = m.s;
+        for (const p of m.s.players) {
+          if (p.id === this.id) continue;
+          const o = this.others.get(p.id);
+          if (o) { o.tx = p.x; o.ty = p.y; o.dir = p.dir; o.moving = p.moving; }
+          else this.others.set(p.id, { x: p.x, y: p.y, tx: p.x, ty: p.y, dir: p.dir, moving: p.moving, phase: 0 });
+        }
+        for (const id of [...this.others.keys()]) if (!m.s.players.some(p => p.id === id)) this.others.delete(id);
+        if (m.s.phase === 'playing' && this.screen !== 'playing') { this.screen = 'playing'; ui.innerHTML = ''; this.minigame = null; }
+        if (m.s.phase === 'results' && this.screen !== 'results') { this.screen = 'results'; this.minigame = null; renderResults(this); }
+        if (prev && m.s.log.length) {
+          // surface new log lines as toasts only for important ones
+        }
+        break;
+      }
+      case 'mgstart': this.minigame = makeMinigame(m.spec); this.moving = false; break;
+      case 'mgcancel': if (this.minigame?.spec.token === m.token) this.minigame = null; break;
+      case 'warp': this.x = m.x; this.y = m.y; this.moving = false; this.posAcc = 0; break;
+      case 'toast': this.toast(m.text, m.kind); break;
+    }
+  }
+  toast(text: string, kind = 'info') { this.toasts.push({ text, kind, until: this.now + 3 }); if (this.toasts.length > 3) this.toasts.shift(); }
+
+  get me() { return this.snap?.players.find(p => p.id === this.id) ?? null; }
+
+  update(dt: number) {
+    this.now += dt;
+    this.toasts = this.toasts.filter(t => t.until > this.now);
+    for (const o of this.others.values()) {
+      const k = Math.min(1, dt * 14);
+      o.x += (o.tx - o.x) * k; o.y += (o.ty - o.y) * k;
+      if (o.moving) o.phase += dt * 14;
+    }
+    if (this.screen !== 'playing' || !this.snap) return;
+    const me = this.me;
+    const stunned = me ? this.snap.time < me.stunnedUntil : false;
+
+    if (this.minigame) {
+      this.minigame.update(dt, input);
+      if (this.minigame.result) {
+        const r = this.minigame.result;
+        if (this.minigame.flash <= 0 || this.minigame.elapsed > this.minigame.spec.time + 1) {
+          this.send({ t: 'mgdone', token: this.minigame.spec.token, success: r.success, quality: r.quality });
+          this.minigame = null;
+        }
+      }
+      return;
+    }
+    if (stunned || me?.busy) { this.moving = false; return; }
+
+    // movement (client authoritative over own position)
+    let dx = input.dirX, dy = input.dirY;
+    const len = Math.hypot(dx, dy);
+    if (len > 0) { dx /= len; dy /= len; }
+    const speed = 4.6;
+    this.moving = len > 0;
+    if (this.moving) {
+      this.tryMove(dx * speed * dt, dy * speed * dt);
+      this.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+      this.walkPhase += dt * 14;
+    }
+    this.posAcc += dt;
+    if ((this.moving && this.posAcc >= 1 / 20) || this.posAcc >= 0.5) { this.posAcc = 0; this.send({ t: 'pos', x: this.x, y: this.y, dir: this.dir, moving: this.moving }); }
+
+    if (input.action) {
+      const t = this.findTarget();
+      if (t) this.send({ t: 'use', target: t.target });
+    }
+  }
+
+  private tryMove(dx: number, dy: number) {
+    const r = 0.28;
+    const free = (x: number, y: number) => !isSolid(Math.floor(x - r), Math.floor(y - r)) && !isSolid(Math.floor(x + r), Math.floor(y - r))
+      && !isSolid(Math.floor(x - r), Math.floor(y + r)) && !isSolid(Math.floor(x + r), Math.floor(y + r));
+    if (free(this.x + dx, this.y)) this.x += dx;
+    if (free(this.x, this.y + dy)) this.y += dy;
+  }
+
+  findTarget(): { target: string; prompt: string } | null {
+    const s = this.snap; const me = this.me;
+    if (!s || !me) return null;
+    const cands: { d: number; target: string; prompt: string }[] = [];
+    for (const o of s.objects) {
+      let px = o.x, py = o.y;
+      if (o.kind === 'mouse') { if (!s.mouse.visible || s.mouse.carrier) continue; px = s.mouse.x; py = s.mouse.y; }
+      const d = dist(this.x, this.y, px, py);
+      if (d > 1.5) continue;
+      if (o.busyBy || o.cooldownUntil > s.time) continue;
+      let prompt = '';
+      switch (o.kind) {
+        case 'knock': if (o.done) continue; prompt = `Knock the ${o.label} off`; break;
+        case 'cabinet': if (o.done) continue; prompt = 'Pick the treat cabinet'; break;
+        case 'rug': prompt = 'Hairball on the good rug'; break;
+        case 'tp': if (o.done) continue; prompt = 'Unroll the toilet paper'; break;
+        case 'window': prompt = 'Stare down the neighbor cat'; break;
+        case 'zoomies': prompt = 'ZOOMIES down the hallway'; break;
+        case 'vent': {
+          if (s.ventOccupant === this.id) continue;
+          const occ = s.players.find(p => p.id === s.ventOccupant);
+          prompt = occ ? `Shove ${occ.name} off the vent` : 'Curl up on the warm vent'; break;
+        }
+        case 'mouse': prompt = 'Grab the toy mouse'; break;
+        case 'pillow': if (!me.carryingMouse) continue; prompt = "Leave the mouse on the human's pillow"; break;
+        default: continue;
+      }
+      cands.push({ d, target: o.id, prompt });
+    }
+    for (const p of s.players) {
+      if (p.id === this.id || p.busy || s.time < p.stunnedUntil) continue;
+      const o = this.others.get(p.id);
+      const d = dist(this.x, this.y, o?.x ?? p.x, o?.y ?? p.y);
+      if (d <= 1.5) cands.push({ d: d + 0.2, target: 'player:' + p.id, prompt: `Groom ${p.name}'s head` });
+    }
+    cands.sort((a, b) => a.d - b.d);
+    return cands[0] ?? null;
+  }
+
+  view(): LocalView {
+    const t = this.screen === 'playing' && !this.minigame ? this.findTarget() : null;
+    return {
+      me: this.me, x: this.x, y: this.y, dir: this.dir, moving: this.moving, walkPhase: this.walkPhase,
+      others: this.others, prompt: t ? `[E]  ${t.prompt}` : null, toasts: this.toasts, now: this.now,
+    };
+  }
+}
+
+// =====================================================================
+// SCREENS (DOM)
+// =====================================================================
+let client: Client | null = null;
+let host: Host | null = null;
+const saved = { name: localStorage.getItem('ns-name') ?? '', cat: (localStorage.getItem('ns-cat') as CatId) ?? 'dorian' };
+
+function catCard(cat: CatId, selected: boolean, taken: boolean, onPick: () => void) {
+  const el = document.createElement('div');
+  el.className = 'cat' + (selected ? ' selected' : '') + (taken ? ' taken' : '');
+  const c = document.createElement('canvas'); c.width = 144; c.height = 112;
+  drawCat(c.getContext('2d')!, cat, 72, 60, 96, 'right', 0);
+  el.append(c);
+  const b = document.createElement('b'); b.textContent = CAT_NAMES[cat];
+  const sp = document.createElement('span'); sp.textContent = CAT_BLURB[cat];
+  el.append(b, sp);
+  if (!taken) el.onclick = onPick;
+  return el;
+}
+
+function renderMenu(error = '') {
+  const params = new URLSearchParams(location.search);
+  const room = (params.get('room') ?? '').toUpperCase();
+  ui.innerHTML = `
+    <div class="panel">
+      <h1>NIGHT SHIFT <small>The humans are asleep. Four cats. One house. Cause problems.</small></h1>
+      <h2>Your name</h2>
+      <input type="text" id="name" maxlength="14" placeholder="what the humans call you" value="${escapeHtml(saved.name)}" />
+      <h2>Your cat</h2>
+      <div class="cats" id="cats"></div>
+      <h2>Play</h2>
+      <div class="row">
+        <button id="host">Host a shift</button>
+        <input type="text" class="code" id="code" maxlength="4" placeholder="CODE" value="${room}" />
+        <button id="join" class="secondary">Join</button>
+      </div>
+      <div class="error" id="err">${escapeHtml(error)}</div>
+      <h2>How it works</h2>
+      <p class="hint">Co-op, 1 to 4 players. Rack up <b>Chaos</b> as a team before the sun comes up, without waking the human.
+      Noise raises <b>Suspicion</b>. Past the red line the human gets up with a spray bottle. You can only see what's near you,
+      so keep talking on voice chat. Shove teammates off the vent and groom their heads for <b>Dominance</b>, which counts for nothing except being Top Cat.</p>
+      <div class="controls">
+        <div><span class="kbd">WASD</span> / arrows move</div><div><span class="kbd">E</span> or <span class="kbd">Space</span> interact</div>
+      </div>
+    </div>`;
+  const catsEl = ui.querySelector('#cats')!;
+  const draw = () => { catsEl.innerHTML = ''; for (const c of CAT_IDS) catsEl.append(catCard(c, saved.cat === c, false, () => { saved.cat = c; draw(); })); };
+  draw();
+  const nameEl = ui.querySelector('#name') as HTMLInputElement;
+  const codeEl = ui.querySelector('#code') as HTMLInputElement;
+  const err = ui.querySelector('#err')!;
+  const getName = () => { saved.name = nameEl.value.trim() || CAT_NAMES[saved.cat]; localStorage.setItem('ns-name', saved.name); localStorage.setItem('ns-cat', saved.cat); return saved.name; };
+  (ui.querySelector('#host') as HTMLButtonElement).onclick = async () => {
+    const name = getName();
+    err.textContent = 'Opening the cat flap…';
+    host = new Host(randomCode());
+    await host.listen();
+    const lb = loopback();
+    host.attach(lb.server);
+    client = new Client(lb.client, name, saved.cat, true, host.code, host.offline);
+  };
+  (ui.querySelector('#join') as HTMLButtonElement).onclick = async () => {
+    const name = getName();
+    const code = codeEl.value.trim().toUpperCase();
+    if (code.length !== 4) { err.textContent = 'Room codes are 4 letters.'; return; }
+    err.textContent = 'Sniffing around for the host…';
+    try {
+      const { link } = await joinRoom(code);
+      client = new Client(link, name, saved.cat, false, code, false);
+    } catch (e: any) { err.textContent = e?.message ?? String(e); }
+  };
+  if (room) codeEl.focus(); else nameEl.focus();
+}
+
+function renderLobby(c: Client) {
+  const link = `${location.origin}${location.pathname}?room=${c.code}`;
+  const taken = new Set(c.lobby.filter(p => p.id !== c.id).map(p => p.cat));
+  ui.innerHTML = `
+    <div class="panel">
+      <h1>LOBBY <small>${c.isHost ? 'You are hosting. Send friends the code or the link.' : 'Waiting for the host to start the shift.'}</small></h1>
+      ${c.offline ? '<div class="error">Could not reach the matchmaking server, so this is a solo offline shift. Friends cannot join this room.</div>' : ''}
+      <div class="code-big">${c.code}</div>
+      <div class="share" id="share">${link}</div>
+      <h2>Cats in the house (${c.lobby.length}/4)</h2>
+      <div class="players" id="players"></div>
+      <h2>Switch cat</h2>
+      <div class="cats" id="cats"></div>
+      <div class="row" style="margin-top:18px">
+        ${c.isHost ? '<button id="start">Start the night shift</button>' : '<button disabled>Host starts the shift</button>'}
+        <button id="leave" class="secondary">Leave</button>
+      </div>
+    </div>`;
+  const pl = ui.querySelector('#players')!;
+  for (const p of c.lobby) {
+    const el = document.createElement('div'); el.className = 'player';
+    const cv = document.createElement('canvas'); cv.width = 96; cv.height = 80;
+    drawCat(cv.getContext('2d')!, p.cat, 48, 44, 64, 'right', 0);
+    const d = document.createElement('div'); d.innerHTML = `<b>${escapeHtml(p.name)}</b><small>${CAT_NAMES[p.cat]}${p.host ? ' · host' : ''}${p.id === c.id ? ' · you' : ''}</small>`;
+    el.append(cv, d); pl.append(el);
+  }
+  const catsEl = ui.querySelector('#cats')!;
+  const mine = c.lobby.find(p => p.id === c.id)?.cat ?? c.cat;
+  for (const cat of CAT_IDS) catsEl.append(catCard(cat, mine === cat, taken.has(cat), () => c.send({ t: 'pickcat', cat })));
+  (ui.querySelector('#share') as HTMLElement).onclick = () => { navigator.clipboard?.writeText(link); c.toast('Link copied'); (ui.querySelector('#share') as HTMLElement).textContent = 'Copied! ' + link; };
+  const start = ui.querySelector('#start') as HTMLButtonElement | null;
+  if (start) start.onclick = () => c.send({ t: 'start' });
+  (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
+}
+
+function renderResults(c: Client) {
+  const s = c.snap!;
+  const players = [...s.players].sort((a, b) => b.dominance - a.dominance);
+  const top = players[0];
+  const busted = s.suspicion >= 100;
+  ui.innerHTML = `
+    <div class="panel">
+      <h1>SHIFT OVER <small>${escapeHtml(s.endReason ?? '')}${busted ? ' Chaos halved.' : ''}</small></h1>
+      <div class="row" style="align-items:center">
+        <div><div class="big">${s.chaos}</div><div class="hint">team chaos</div></div>
+        <div><div class="big" style="font-size:28px">${s.objectives.filter(o => o.done).length}/${s.objectives.length}</div><div class="hint">objectives</div></div>
+        ${top ? `<div><div class="big" style="font-size:28px"><span class="crown">👑</span> ${escapeHtml(top.name)}</div><div class="hint">Top Cat (${top.dominance} dominance)</div></div>` : ''}
+      </div>
+      <h2>Objectives</h2>
+      ${s.objectives.map(o => `<div class="${o.done ? 'ok' : 'bad'}">${o.done ? '☑' : '☐'} ${o.text}${o.target > 1 ? ` (${Math.floor(o.progress)}/${o.target})` : ''}</div>`).join('')}
+      <h2>Cats</h2>
+      <table><tr><th>Cat</th><th>Chaos caused</th><th>Dominance</th><th>Sprayed</th></tr>
+      ${players.map((p, i) => `<tr><td>${i === 0 ? '👑 ' : ''}<b>${escapeHtml(p.name)}</b> <span class="hint">${CAT_NAMES[p.cat]}</span></td><td>${p.chaos}</td><td>${p.dominance}</td><td>${p.sprays}</td></tr>`).join('')}
+      </table>
+      <div class="row" style="margin-top:18px">
+        ${c.isHost ? '<button id="again">Back to lobby</button>' : '<button disabled>Waiting for host</button>'}
+        <button id="leave" class="secondary">Leave</button>
+      </div>
+    </div>`;
+  const again = ui.querySelector('#again') as HTMLButtonElement | null;
+  if (again) again.onclick = () => c.send({ t: 'again' });
+  (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
+}
+
+function escapeHtml(s: string) { return s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!)); }
+
+// =====================================================================
+// LOOP
+// =====================================================================
+let last = performance.now();
+let idlePhase = 0;
+function frame(now: number) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (client) {
+    client.update(dt);
+    const mg = client.minigame;
+    renderer.draw(client.snap, client.view(), mg ? (ctx, w, h) => mg.draw(ctx, w, h) : undefined);
+  } else {
+    // idle backdrop: wander the camera a little over the dark house
+    idlePhase += dt * 0.15;
+    renderer.draw(null, { me: null, x: 18 + Math.sin(idlePhase) * 10, y: 10, dir: 'down', moving: false, walkPhase: 0, others: new Map(), prompt: null, toasts: [], now });
+  }
+  input.endFrame();
+  requestAnimationFrame(frame);
+}
+(window as any).__ns = () => ({ client, host });
+renderMenu();
+requestAnimationFrame(frame);

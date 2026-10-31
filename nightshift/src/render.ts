@@ -20,6 +20,13 @@ const FURN_COLORS: Record<Furniture['kind'], string> = {
   shelf: '#6a4a30', plant: '#2f7a3a', litter: '#9a8d78', catbed: '#b04a5a', tv: '#1a1a22', lamp: '#f0d080',
 };
 
+function fitText(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ctx.measureText(text.slice(0, mid) + '…').width <= maxW) lo = mid; else hi = mid - 1; }
+  return text.slice(0, lo).trimEnd() + '…';
+}
+
 export class Renderer {
   ctx: CanvasRenderingContext2D;
   fog: HTMLCanvasElement = document.createElement('canvas');
@@ -145,10 +152,12 @@ export class Renderer {
         if (seen(h.x, h.y) > 0.02) { const [sx, sy] = toScreen(h.x, h.y); drawHuman(ctx, sx, sy, z32, "down", v.now, false); }
       } else if (seen(h.x, h.y) > 0.02) {
         const [sx, sy] = toScreen(h.x, h.y);
-        // flashlight glow
-        const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 3.2 * z32);
-        g.addColorStop(0, 'rgba(255,240,180,0.25)'); g.addColorStop(1, 'rgba(255,240,180,0)');
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, 3.2 * z32, 0, Math.PI * 2); ctx.fill();
+        // flashlight glow (red and wider when the lights are on and the human is hunting)
+        const hunting = h.phase === 'hunt';
+        const r = (hunting ? 4.5 : 3.2) * z32;
+        const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        g.addColorStop(0, hunting ? 'rgba(255,120,100,0.3)' : 'rgba(255,240,180,0.25)'); g.addColorStop(1, 'rgba(255,240,180,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
         drawHuman(ctx, sx, sy, z32, h.dir, v.now * 4, true);
       }
       // other cats, sorted by y
@@ -190,7 +199,8 @@ export class Renderer {
     ctx.restore();
 
     // footsteps indicator when human is up but unseen
-    if (snap && (snap.human.phase === 'patrol' || snap.human.phase === 'returning') && seen(snap.human.x, snap.human.y) <= 0.02) {
+    if (snap && snap.human.phase === 'hunt') { ctx.fillStyle = `rgba(255,80,60,${0.06 + 0.05 * Math.sin(v.now * 6)})`; ctx.fillRect(0, 0, W, H); }
+    if (snap && (snap.human.phase === 'patrol' || snap.human.phase === 'hunt') && seen(snap.human.x, snap.human.y) <= 0.02) {
       const d = Math.hypot(snap.human.x - v.x, snap.human.y - v.y);
       if (d < 12) {
         const ang = Math.atan2(snap.human.y - v.y, snap.human.x - v.x);
@@ -264,21 +274,22 @@ export class Renderer {
     for (const th of [0.35, 0.6]) { ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fillRect(28 * z + 300 * z * th, 76 * z, 2 * z, 18 * z); }
     const hp = snap.human.phase;
     ctx.fillStyle = hp === 'asleep' ? '#8be28b' : hp === 'stirring' ? '#ffb347' : '#ff5e5e'; ctx.font = `bold ${12 * z}px system-ui, sans-serif`;
-    ctx.textAlign = 'right'; ctx.fillText(hp === 'asleep' ? 'zzz' : hp === 'stirring' ? 'STIRRING' : 'AWAKE', 330 * z, 70 * z);
+    ctx.textAlign = 'right'; ctx.fillText(hp === 'asleep' ? 'zzz' : hp === 'stirring' ? 'STIRRING' : hp === 'hunt' ? 'LIGHTS ON' : 'AWAKE', 330 * z, 70 * z);
+    if (snap.busts > 0 && hp !== 'hunt') { ctx.fillStyle = '#ff7b7b'; ctx.font = `bold ${11 * z}px system-ui, sans-serif`; ctx.fillText('one more bust ends the shift', 330 * z, 104 * z); }
 
     // objectives (right on wide screens, under the top bar on phones)
-    const ow = this.narrow ? Math.min(330 * z, W - 28 * z) : 300 * z;
+    const ow = this.narrow ? Math.min(340 * z, W - 28 * z) : 360 * z;
     const ox = this.narrow ? 14 * z : W - ow - 14 * z;
     const oy = this.narrow ? 114 * z : 14 * z;
     const lineH = this.narrow ? 19 : 22;
     const oh = (34 + snap.objectives.length * lineH) * z;
     ctx.fillStyle = 'rgba(8,6,16,0.75)'; roundRect(ctx, ox, oy, ow, oh, 12 * z); ctx.fill();
-    ctx.textAlign = 'left'; ctx.fillStyle = '#f4c95d'; ctx.font = `bold ${12 * z}px system-ui, sans-serif`; ctx.fillText('TONIGHT\'S OBJECTIVES', ox + 14 * z, oy + 22 * z);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#f4c95d'; ctx.font = `bold ${12 * z}px system-ui, sans-serif`; ctx.fillText(snap.board > 1 ? `OBJECTIVES · BOARD ${snap.board}` : 'TONIGHT\'S OBJECTIVES', ox + 14 * z, oy + 22 * z);
     ctx.font = `${this.narrow ? 12 : 13}px system-ui, sans-serif`.replace(/^(\d+)px/, (_, n) => `${Number(n) * z}px`);
     snap.objectives.forEach((o, i) => {
       ctx.fillStyle = o.done ? '#8be28b' : '#eee';
       const prog = o.target > 1 ? ` (${Math.floor(o.progress)}/${o.target})` : '';
-      ctx.fillText(`${o.done ? '☑' : '☐'} ${o.text}${prog}`, ox + 14 * z, oy + (44 + i * lineH) * z);
+      ctx.fillText(fitText(ctx, `${o.done ? '☑' : '☐'} ${o.text}${prog}`, ow - 28 * z), ox + 14 * z, oy + (44 + i * lineH) * z);
     });
     // my stats under objectives
     if (v.me) {

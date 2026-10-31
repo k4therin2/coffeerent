@@ -2,56 +2,81 @@ import {
   type CatId, type ClientMsg, type Departed, type HostMsg, type LogEvent, type MinigameSpec, type Objective,
   type ObjectState, type Phase, type PlayerState, type Snapshot, type HumanState, CAT_IDS, CAT_NAMES, ROUND_SECONDS,
 } from './types';
-import { CAT_BED, HUMAN_BED, HUMAN_PATROL, MOUSE_SPAWN, SPAWNS, hasLOS, makeObjects } from './map';
+import { CAT_BED, HUMAN_BED, HUMAN_ROUTES, LITTER, MOUSE_SPAWN, SPAWNS, type Waypoint, hasLOS, makeObjects } from './map';
 
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 
-interface Pending {
-  token: number;
-  pid: string;
-  spec: MinigameSpec;
-  deadline: number;
-  pairId?: number;
-}
-interface Pair {
-  id: number;
-  licker: string;
-  lickee: string;
-  results: Record<string, boolean | undefined>;
-}
+/**
+ * Every tunable number in one place. "N" below means the number of cats
+ * connected right now (at least 1). Rationale for the shape of these lives in
+ * the balance review in the repo history: pressure scales sublinearly with N,
+ * nothing may pay well with zero noise and zero risk, and a bust is a scare
+ * before it is a game over.
+ */
+export const BAL = {
+  /** suspicion drain per second; shared meter fed by N cats, so drain grows with sqrt(N) */
+  drain: (n: number) => 1.2 * Math.sqrt(n),
+  deepSleepSeconds: 15,          // after the human lies back down the drain doubles for this long
+  deepSleepResetTo: 20,          // and the meter drops to at most this
+  stirAt: 35, patrolAt: 60, sleepBelow: 25, keepPatrollingAbove: 45,
+  scheduledTripWindow: [100, 160] as [number, number], // once per round the human gets up anyway
+  human: { walk: 2.6, hunt: 3.4, sprayRange: 3.2, huntSprayRange: 4.5, sprayCooldown: 1.5 },
+  spray: { chaos: 20, huntChaos: 25, dominance: 5, stun: 3, suspicionFloor: 50 },
+  bust: { chaosMultiplier: 0.8, resetTo: 85, afterHunt: 40 },
+  swipe: { hit: 15, crashQuality: 0.3, crashChaos: 10, hitNoise: 5, crashNoise: 15, missNoise: 3, missRetry: 3, cooldown: 50, speedMin: 0.9, speedSpan: 0.5, zone: 0.22 },
+  cabinet: { chaos: 30, dom: 8, noise: 8, failNoise: 5, cooldown: 60, pinsSolo: 3, pinsHelped: 2, speed: 1.3, helperRange: 2.5, helperChaos: 5 },
+  rug: { base: 5, perQuality: 20, dom: 4, noise: 3, cooldown: 25 },
+  tp: { chaos: 15, dom: 5, noise: 4, cooldown: 60, failChaos: 4, failNoise: 2, failRetry: 8 },
+  stare: { chaos: 8, dom: 10, cooldown: 40, failNoise: 6, failDom: 3 },
+  zoomies: { chaos: 30, dom: 6, noiseBase: 4, noisePerQuality: 12, cooldown: 25, objectiveQuality: 0.5 },
+  vent: { warmChaosPerSec: 0.4, warmSeconds: 20, coldChaosPerSec: 0.1, domPerSec: 1 },
+  shove: { dom: 3, victimDom: 1, cooldown: 3, pairCooldown: 12 },
+  groom: { chaos: 12, dom: 12, lickeeChaos: 5, partialChaos: 8, partialDom: 2, bapChaos: 3, bapDom: -2, bapNoise: 3, pairCooldown: 15, playerCooldown: 20, stillFor: 1.0, humanNear: 8 },
+  mouse: { chaos: 45, dom: 10, noise: 12, respawn: 20, droppedRespawn: 40 },
+  objective: { complete: 25, boardClear: 50, boardSize: (n: number) => Math.min(5, 2 + n) },
+};
+
+interface Pending { token: number; pid: string; spec: MinigameSpec; deadline: number; pairId?: number }
+interface Pair { id: number; licker: string; lickee: string; results: Record<string, boolean | undefined> }
 
 export class Sim {
   phase: Phase = 'lobby';
   players = new Map<string, PlayerState>();
   objects: ObjectState[] = makeObjects();
   objectives: Objective[] = [];
+  board = 0;
+  busts = 0;
   time = 0;
   timeLeft = ROUND_SECONDS;
   suspicion = 0;
   chaos = 0;
-  human: HumanState & { idx: number; sprayCd: number } = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0 };
+  human: HumanState & { idx: number; sprayCd: number; route: Waypoint[]; waitUntil: number } =
+    { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0, route: HUMAN_ROUTES.hallway, waitUntil: 0 };
   mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null as string | null, visible: true, respawnAt: 0 };
   ventOccupant: string | null = null;
   log: LogEvent[] = [];
   departed: Departed[] = [];
-  /** full state of players who dropped mid-round, keyed by their rejoin key */
-  private dropped = new Map<string, PlayerState>();
   endReason?: string;
+  private dropped = new Map<string, PlayerState>();
   private pending = new Map<number, Pending>();
   private pairs = new Map<number, Pair>();
   private tokenSeq = 1;
   private shoveCd = new Map<string, number>();
   private lickCd = new Map<string, number>();
-  private allDoneBonus = false;
+  private usedObjectives = new Set<string>();
+  private ventSince = 0;
+  private deepSleepUntil = 0;
+  private scheduledTripAt = 0;
+  private tripAnnounced = false;
+  private lastMoved = new Map<string, number>();
 
   constructor(private send: (pid: string, m: HostMsg) => void, private broadcast: (m: HostMsg) => void) {}
 
+  get n() { return Math.max(1, this.players.size); }
+
   // ---------- lobby ----------
-  /**
-   * Add a player. Mid-round, a player whose key (or, failing that, name) matches
-   * someone who dropped gets their cat and scores back. Returns 'rejoined' | 'joined' | null (full).
-   */
   addPlayer(id: string, name: string, wantCat: CatId, key: string): { p: PlayerState; rejoined: boolean } | null {
     if (this.players.size >= 4) return null;
     const cleanName = name.slice(0, 14);
@@ -105,25 +130,35 @@ export class Sim {
   // ---------- round ----------
   start() {
     this.phase = 'playing';
-    this.time = 0; this.timeLeft = ROUND_SECONDS; this.suspicion = 0; this.chaos = 0;
+    this.time = 0; this.timeLeft = ROUND_SECONDS; this.suspicion = 0; this.chaos = 0; this.busts = 0;
     this.objects = makeObjects();
-    this.human = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0 };
+    this.human = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0, route: HUMAN_ROUTES.hallway, waitUntil: 0 };
     this.mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null, visible: true, respawnAt: 0 };
-    this.ventOccupant = null; this.log = []; this.endReason = undefined; this.allDoneBonus = false;
-    this.departed = []; this.dropped.clear();
-    this.pending.clear(); this.pairs.clear(); this.shoveCd.clear(); this.lickCd.clear();
+    this.ventOccupant = null; this.log = []; this.endReason = undefined;
+    this.departed = []; this.dropped.clear(); this.usedObjectives.clear(); this.board = 0;
+    this.pending.clear(); this.pairs.clear(); this.shoveCd.clear(); this.lickCd.clear(); this.lastMoved.clear();
+    this.deepSleepUntil = 0; this.tripAnnounced = false;
+    this.scheduledTripAt = rnd(BAL.scheduledTripWindow[0], BAL.scheduledTripWindow[1]);
     let i = 0;
     for (const p of this.players.values()) {
       Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0 });
       this.warp(p, SPAWNS[i].x, SPAWNS[i].y);
       i++;
     }
-    this.objectives = pickObjectives(this.players.size);
+    this.dealBoard();
     this.logEv('The humans are asleep. Night shift begins.', 'info');
   }
-  backToLobby() {
-    this.phase = 'lobby';
-    this.sendLobby();
+  backToLobby() { this.phase = 'lobby'; this.sendLobby(); }
+
+  /** Deal a fresh objective board sized and targeted for the current cat count. */
+  private dealBoard() {
+    this.board++;
+    const tier = this.board - 1;
+    let pool = objectivePool(this.n, tier).filter(o => !this.usedObjectives.has(o.id));
+    if (pool.length < BAL.objective.boardSize(this.n)) { this.usedObjectives.clear(); pool = objectivePool(this.n, tier); }
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+    this.objectives = pool.slice(0, BAL.objective.boardSize(this.n));
+    for (const o of this.objectives) this.usedObjectives.add(o.id);
   }
 
   // ---------- messages ----------
@@ -134,6 +169,7 @@ export class Sim {
       case 'pos':
         if (this.phase !== 'playing') return;
         if (p.busy || this.time < p.stunnedUntil || this.time < p.ignorePosUntil) return;
+        if (m.moving || dist(p.x, p.y, m.x, m.y) > 0.05) this.lastMoved.set(pid, this.time);
         p.x = m.x; p.y = m.y; p.dir = m.dir; p.moving = m.moving;
         if (p.onVent) {
           const v = this.obj('vent');
@@ -156,9 +192,8 @@ export class Sim {
   private dropMouse(p: PlayerState) {
     p.carryingMouse = false;
     this.mouse.carrier = null; this.mouse.visible = true; this.mouse.x = p.x; this.mouse.y = p.y;
-    this.mouse.respawnAt = this.time + 40; // a dropped mouse finds its way home eventually
+    this.mouse.respawnAt = this.time + BAL.mouse.droppedRespawn;
   }
-  /** Cancel every pending minigame for a player (spray, disconnect). Pairs resolve as a fail for that side. */
   private cancelPendingFor(pid: string) {
     for (const pend of [...this.pending.values()]) {
       if (pend.pid !== pid) continue;
@@ -179,13 +214,17 @@ export class Sim {
     this.pairs.delete(pair.id);
     const licker = this.players.get(pair.licker), lickee = this.players.get(pair.lickee);
     if (!licker) return;
+    const G = BAL.groom;
     const lickeeName = lickee?.name ?? 'the other cat';
-    if (a && b && lickee) { this.score(licker, 25, 12); lickee.dominance -= 3; this.progress('lick'); this.logEv(`${licker.name} groomed ${lickee.name}. ${lickee.name} allowed it.`, 'dom'); }
-    else if (a && !b) { this.score(licker, 8, 2); this.logEv(`${lickeeName} squirmed away from ${licker.name}.`, 'info'); }
-    else { this.score(licker, 3, -2); this.noise(3); this.logEv(`${licker.name} tried to groom ${lickeeName} and got bapped.`, 'bad'); }
+    if (a && b && lickee) {
+      this.score(licker, G.chaos, G.dom); lickee.chaos += G.lickeeChaos; this.chaos += G.lickeeChaos;
+      this.progress('lick'); this.logEv(`${licker.name} groomed ${lickee.name}. ${lickee.name} allowed it.`, 'dom');
+    } else if (a && !b) { this.score(licker, G.partialChaos, G.partialDom); this.logEv(`${lickeeName} squirmed away from ${licker.name}.`, 'info'); }
+    else { this.score(licker, G.bapChaos, G.bapDom); this.noise(G.bapNoise); this.logEv(`${licker.name} tried to groom ${lickeeName} and got bapped.`, 'bad'); }
   }
   private warp(p: PlayerState, x: number, y: number) {
     p.x = x; p.y = y; p.moving = false; p.ignorePosUntil = this.time + 0.7;
+    this.lastMoved.set(p.id, this.time);
     this.send(p.id, { t: 'warp', x, y });
   }
   private logEv(text: string, kind: LogEvent['kind']) {
@@ -204,10 +243,12 @@ export class Sim {
     if (o.progress >= o.target) {
       o.done = true;
       this.logEv(`Objective complete: ${o.text}`, 'good');
-      this.chaos += 25;
-      if (!this.allDoneBonus && this.objectives.every(x => x.done)) {
-        this.allDoneBonus = true; this.chaos += 50;
-        this.logEv('ALL OBJECTIVES DONE. +50 bonus. Keep causing problems.', 'good');
+      this.chaos += BAL.objective.complete;
+      if (this.objectives.every(x => x.done)) {
+        this.chaos += BAL.objective.boardClear;
+        this.dealBoard();
+        this.logEv(`BOARD CLEARED. +${BAL.objective.boardClear}. The night is young: new objectives.`, 'good');
+        this.broadcast({ t: 'toast', text: 'Board cleared! New objectives.', kind: 'good' });
       }
     }
   }
@@ -223,17 +264,17 @@ export class Sim {
     switch (o.kind) {
       case 'knock':
         if (o.done) return;
-        return this.startMinigame(p, { kind: 'swipe', title: `Knock the ${o.label} off`, time: 6, params: { speed: 1.0 + Math.random() * 0.6, zone: 0.22 }, objectId: o.id });
+        return this.startMinigame(p, { kind: 'swipe', title: `Knock the ${o.label} off`, time: 6, params: { speed: BAL.swipe.speedMin + Math.random() * BAL.swipe.speedSpan, zone: BAL.swipe.zone, crash: BAL.swipe.crashQuality }, objectId: o.id });
       case 'cabinet': {
         if (o.done) return;
-        const helpers = [...this.players.values()].filter(q => q.id !== p.id && dist(q.x, q.y, o.x, o.y) < 2.5).length;
-        return this.startMinigame(p, { kind: 'pick', title: 'Pick the treat cabinet', time: 14, params: { pins: helpers > 0 ? 2 : 4, speed: 1.6 }, objectId: o.id });
+        const helped = this.helpersNear(p, o) > 0;
+        return this.startMinigame(p, { kind: 'pick', title: 'Pick the treat cabinet', time: 14, params: { pins: helped ? BAL.cabinet.pinsHelped : BAL.cabinet.pinsSolo, speed: BAL.cabinet.speed }, objectId: o.id });
       }
       case 'rug':
         return this.startMinigame(p, { kind: 'mash', title: 'Hairball on the good rug', time: 7, params: { label: 'HACK', target: 0.75, width: 0.15 }, objectId: o.id });
       case 'tp':
         if (o.done) return;
-        return this.startMinigame(p, { kind: 'mash', title: 'Unroll the toilet paper', time: 7, params: { label: 'PAW', target: 0.9, width: 0.3 }, objectId: o.id });
+        return this.startMinigame(p, { kind: 'mash', title: 'Unroll the toilet paper', time: 7, params: { label: 'PAW', target: 0.85, width: 0.2 }, objectId: o.id });
       case 'window':
         return this.startMinigame(p, { kind: 'stare', title: 'Staring contest: the neighbor cat', time: 7, params: { hold: 6 }, objectId: o.id });
       case 'zoomies':
@@ -247,11 +288,14 @@ export class Sim {
         return;
       case 'pillow':
         if (!p.carryingMouse) return;
-        p.carryingMouse = false; this.mouse.carrier = null; this.mouse.visible = false; this.mouse.respawnAt = this.time + 30;
-        this.score(p, 40, 10); this.noise(12); this.progress('mouse');
+        p.carryingMouse = false; this.mouse.carrier = null; this.mouse.visible = false; this.mouse.respawnAt = this.time + BAL.mouse.respawn;
+        this.score(p, BAL.mouse.chaos, BAL.mouse.dom); this.noise(BAL.mouse.noise); this.progress('mouse');
         this.logEv(`${p.name} left a gift on the pillow. The human murmurs.`, 'good');
         return;
     }
+  }
+  private helpersNear(p: PlayerState, o: ObjectState) {
+    return [...this.players.values()].filter(q => q.id !== p.id && dist(q.x, q.y, o.x, o.y) < BAL.cabinet.helperRange).length;
   }
 
   private useVent(p: PlayerState, v: ObjectState) {
@@ -259,27 +303,38 @@ export class Sim {
     if (this.ventOccupant) {
       const victim = this.players.get(this.ventOccupant);
       if ((this.shoveCd.get(p.id) ?? 0) > this.time) return;
-      this.shoveCd.set(p.id, this.time + 3);
+      if (victim && (this.shoveCd.get(p.id + '>' + victim.id) ?? 0) > this.time) return;
+      this.shoveCd.set(p.id, this.time + BAL.shove.cooldown);
       if (victim) {
+        this.shoveCd.set(p.id + '>' + victim.id, this.time + BAL.shove.pairCooldown);
         victim.onVent = false; victim.stunnedUntil = this.time + 1.2;
         const ox = victim.x < v.x ? -1 : 1;
         this.warp(victim, v.x + ox, v.y);
         this.send(victim.id, { t: 'toast', text: `${p.name} shoved you off the vent.`, kind: 'dom' });
-        this.score(p, 0, 6); victim.dominance -= 2;
+        this.score(p, 0, BAL.shove.dom); victim.dominance -= BAL.shove.victimDom;
         this.logEv(`${p.name} shoved ${victim.name} off the vent.`, 'dom');
       }
     }
-    this.ventOccupant = p.id; p.onVent = true;
+    this.ventOccupant = p.id; p.onVent = true; this.ventSince = this.time;
     this.warp(p, v.x, v.y);
   }
 
   private tryLick(p: PlayerState, otherId: string) {
     const q = this.players.get(otherId);
-    if (!q || q.id === p.id || q.busy || this.time < q.stunnedUntil) return;
+    if (!q || q.id === p.id || q.busy || this.time < q.stunnedUntil || q.carryingMouse) return;
     if (dist(p.x, p.y, q.x, q.y) > 1.6) return;
+    // consent by stillness: the other cat has to have been standing still for a moment
+    if (this.time - (this.lastMoved.get(q.id) ?? -99) < BAL.groom.stillFor) return;
+    // never while the human is about
+    if (this.human.phase === 'patrol' || this.human.phase === 'hunt') {
+      if (dist(this.human.x, this.human.y, q.x, q.y) < BAL.groom.humanNear) return;
+    }
     const key = [p.id, q.id].sort().join('|');
     if ((this.lickCd.get(key) ?? 0) > this.time) return;
-    this.lickCd.set(key, this.time + 15);
+    if ((this.lickCd.get(p.id) ?? 0) > this.time || (this.lickCd.get(q.id) ?? 0) > this.time) return;
+    this.lickCd.set(key, this.time + BAL.groom.pairCooldown);
+    this.lickCd.set(p.id, this.time + BAL.groom.playerCooldown);
+    this.lickCd.set(q.id, this.time + BAL.groom.playerCooldown);
     const pairId = this.tokenSeq++;
     this.pairs.set(pairId, { id: pairId, licker: p.id, lickee: q.id, results: {} });
     if (q.onVent) { q.onVent = false; if (this.ventOccupant === q.id) this.ventOccupant = null; }
@@ -307,45 +362,60 @@ export class Sim {
     if (o) o.busyBy = undefined;
     if (this.phase !== 'playing') return;
     switch (spec.kind) {
-      case 'swipe':
+      case 'swipe': {
         if (!o) break;
-        if (timedOut) { o.cooldownUntil = this.time + 4; this.noise(2); break; } // walked away, nothing fell
-        o.done = true; o.cooldownUntil = this.time + 50;
-        this.progress('knock3');
-        if (success) { this.score(p, 15, 4); this.noise(5); this.logEv(`${p.name} nudged the ${o.label} off. Thunk.`, 'good'); }
-        else { this.score(p, 6, 1); this.noise(20); this.logEv(`${p.name} SMASHED the ${o.label}.`, 'bad'); }
+        const S = BAL.swipe;
+        if (timedOut) { o.cooldownUntil = this.time + 4; this.noise(2); break; }           // walked away, nothing fell
+        if (!success) { o.cooldownUntil = this.time + S.missRetry; this.noise(S.missNoise); this.logEv(`${p.name} swiped at the ${o.label} and missed.`, 'info'); break; }
+        // if it counts, it fell: a clean hit is quiet, an edge hit is a crash
+        o.done = true; o.cooldownUntil = this.time + S.cooldown;
+        this.progress('knock');
+        if (quality >= S.crashQuality) { this.score(p, o.value ?? S.hit, 4); this.noise(S.hitNoise); this.logEv(`${p.name} nudged the ${o.label} off. Thunk.`, 'good'); }
+        else { this.score(p, S.crashChaos, 2); this.noise(S.crashNoise); this.logEv(`${p.name} sent the ${o.label} flying. CRASH.`, 'bad'); }
         break;
-      case 'pick':
+      }
+      case 'pick': {
         if (!o) break;
-        if (success) { o.done = true; o.cooldownUntil = this.time + 60; this.score(p, 30, 8); this.noise(8); this.progress('cabinet'); this.logEv(`${p.name} opened the treat cabinet. Treats for everyone.`, 'good'); }
-        else { this.noise(5); this.logEv(`${p.name} rattled the cabinet and gave up.`, 'info'); }
+        const C = BAL.cabinet;
+        if (success) {
+          o.done = true; o.cooldownUntil = this.time + C.cooldown; this.score(p, C.chaos, C.dom); this.noise(C.noise); this.progress('cabinet');
+          const helpers = [...this.players.values()].filter(q => q.id !== p.id && dist(q.x, q.y, o.x, o.y) < C.helperRange);
+          for (const h of helpers) { h.chaos += C.helperChaos; this.chaos += C.helperChaos; }
+          this.logEv(`${p.name} opened the treat cabinet${helpers.length ? ' with ' + helpers.map(h => h.name).join(' and ') : ''}. Treats for everyone.`, 'good');
+        } else { this.noise(C.failNoise); this.logEv(`${p.name} rattled the cabinet and gave up.`, 'info'); }
         break;
+      }
       case 'mash':
         if (!o) break;
         if (o.kind === 'rug') {
-          o.cooldownUntil = this.time + 20;
-          const pts = Math.round(5 + 20 * quality);
-          this.score(p, pts, success ? 4 : 0); this.noise(3);
+          const R = BAL.rug;
+          o.cooldownUntil = this.time + R.cooldown;
+          this.score(p, Math.round(R.base + R.perQuality * quality), success ? R.dom : 0); this.noise(R.noise);
           if (success) { this.progress('hairball'); this.logEv(`${p.name} produced a perfect hairball on the good rug.`, 'good'); }
           else this.logEv(`${p.name} coughed up something near the rug. Close enough.`, 'info');
         } else {
-          if (success) { o.done = true; o.cooldownUntil = this.time + 60; this.score(p, 20, 5); this.noise(4); this.progress('tp'); this.logEv(`${p.name} unrolled the entire toilet paper.`, 'good'); }
-          else { o.cooldownUntil = this.time + 8; this.score(p, 4); this.noise(2); this.logEv(`${p.name} shredded a bit of toilet paper.`, 'info'); }
+          const T = BAL.tp;
+          if (success) { o.done = true; o.cooldownUntil = this.time + T.cooldown; this.score(p, T.chaos, T.dom); this.noise(T.noise); this.progress('tp'); this.logEv(`${p.name} unrolled the entire toilet paper.`, 'good'); }
+          else { o.cooldownUntil = this.time + T.failRetry; this.score(p, T.failChaos); this.noise(T.failNoise); this.logEv(`${p.name} shredded a bit of toilet paper.`, 'info'); }
         }
         break;
-      case 'stare':
+      case 'stare': {
         if (!o) break;
-        o.cooldownUntil = this.time + 25;
-        if (success) { this.score(p, 20, 10); this.progress('stare'); this.logEv(`${p.name} out-stared the neighbor cat. Dominance asserted.`, 'dom'); }
-        else { this.noise(6); p.dominance -= 3; this.logEv(`${p.name} blinked first and hissed at the window.`, 'bad'); }
+        const S = BAL.stare;
+        o.cooldownUntil = this.time + S.cooldown;
+        if (success) { this.score(p, S.chaos, S.dom); this.progress('stare'); this.logEv(`${p.name} out-stared the neighbor cat. Dominance asserted.`, 'dom'); }
+        else { this.noise(S.failNoise); p.dominance -= S.failDom; this.logEv(`${p.name} blinked first and hissed at the window.`, 'bad'); }
         break;
-      case 'zoomies':
+      }
+      case 'zoomies': {
         if (!o) break;
-        o.cooldownUntil = this.time + 10;
-        { const pts = Math.round(30 * quality); this.score(p, pts, Math.round(6 * quality)); this.noise(2 + 10 * quality);
-          if (quality >= 0.5) this.progress('zoomies2');
-          this.logEv(quality >= 0.9 ? `${p.name} did PERFECT zoomies. The floor shook.` : `${p.name} did zoomies (${Math.round(quality * 100)}%).`, quality >= 0.9 ? 'good' : 'info'); }
+        const Z = BAL.zoomies;
+        o.cooldownUntil = this.time + Z.cooldown;
+        this.score(p, Math.round(Z.chaos * quality), Math.round(Z.dom * quality)); this.noise(Z.noiseBase + Z.noisePerQuality * quality);
+        if (quality >= Z.objectiveQuality) this.progress('zoomies');
+        this.logEv(quality >= 0.9 ? `${p.name} did PERFECT zoomies. The floor shook.` : `${p.name} did zoomies (${Math.round(quality * 100)}%).`, quality >= 0.9 ? 'good' : 'info');
         break;
+      }
       case 'rhythm':
       case 'balance':
         if (pend.pairId !== undefined) this.pairResult(pend.pairId, p.id, success);
@@ -356,12 +426,13 @@ export class Sim {
   // ---------- tick ----------
   tick(dt: number) {
     if (this.phase !== 'playing') return;
-    if (this.suspicion >= 100) return this.end('THE HUMANS ARE AWAKE. Lights on. Everyone scatter.', true);
+    if (this.suspicion >= 100) this.bust();
+    if (this.phase !== 'playing') return;
     this.time += dt;
     this.timeLeft = Math.max(0, ROUND_SECONDS - this.time);
-    this.suspicion = clamp(this.suspicion - 1.2 * dt, 0, 100);
+    const drain = BAL.drain(this.n) * (this.time < this.deepSleepUntil ? 2 : 1);
+    this.suspicion = clamp(this.suspicion - drain * dt, 0, 100);
 
-    // minigame timeouts
     for (const pend of [...this.pending.values()]) {
       if (this.time > pend.deadline) {
         this.pending.delete(pend.token);
@@ -372,76 +443,121 @@ export class Sim {
         if (pend.pairId !== undefined) this.pairResult(pend.pairId, pend.pid, false);
       }
     }
-    // object respawns
     for (const o of this.objects) if (o.done && o.cooldownUntil && this.time > o.cooldownUntil) { o.done = false; o.cooldownUntil = 0; }
-    // mouse respawn
     if (!this.mouse.carrier && this.mouse.respawnAt && this.time > this.mouse.respawnAt) {
       this.mouse.visible = true; this.mouse.x = MOUSE_SPAWN.x; this.mouse.y = MOUSE_SPAWN.y; this.mouse.respawnAt = 0;
     }
-    // vent
     if (this.ventOccupant) {
       const p = this.players.get(this.ventOccupant);
-      if (p && p.onVent) { this.chaos += 2 * dt; p.chaos += 2 * dt; p.dominance += 1 * dt; this.progress('vent', dt); }
-      else this.ventOccupant = null;
+      if (p && p.onVent) {
+        const V = BAL.vent;
+        const rate = this.time - this.ventSince < V.warmSeconds ? V.warmChaosPerSec : V.coldChaosPerSec;
+        this.chaos += rate * dt; p.chaos += rate * dt; p.dominance += V.domPerSec * dt; this.progress('vent', dt);
+      } else this.ventOccupant = null;
     }
     this.tickHuman(dt);
+    if (this.timeLeft <= 0) return this.end('The sun came up. Shift over.');
+  }
 
-    if (this.timeLeft <= 0) return this.end('The sun came up. Shift over.', false);
+  private wake(routeName: keyof typeof HUMAN_ROUTES, phase: 'patrol' | 'hunt', line: string) {
+    const h = this.human;
+    h.phase = phase; h.route = HUMAN_ROUTES[routeName]; h.idx = 0; h.waitUntil = 0;
+    h.x = HUMAN_BED.x; h.y = HUMAN_BED.y;
+    this.logEv(line, 'bad');
+    this.broadcast({ t: 'toast', text: line, kind: 'bad' });
+  }
+  private backToBed(afterHunt: boolean) {
+    const h = this.human;
+    h.phase = 'asleep'; h.x = HUMAN_BED.x; h.y = HUMAN_BED.y;
+    if (afterHunt) { this.suspicion = Math.min(this.suspicion, BAL.bust.afterHunt); this.logEv('The lights go off. The human grumbles back to bed.', 'good'); }
+    else {
+      this.suspicion = Math.min(this.suspicion, BAL.deepSleepResetTo); this.deepSleepUntil = this.time + BAL.deepSleepSeconds;
+      this.logEv('The human is snoring. Go.', 'good');
+      this.broadcast({ t: 'toast', text: 'The human is snoring. Go go go.', kind: 'good' });
+    }
+  }
+  private pickRoute(): keyof typeof HUMAN_ROUTES {
+    const r = Math.random();
+    return r < 0.4 ? 'hallway' : r < 0.7 ? 'kitchen' : 'living';
   }
 
   private tickHuman(dt: number) {
     const h = this.human;
     h.sprayCd = Math.max(0, h.sprayCd - dt);
+    const B = BAL;
+    // the scheduled trip: once per round the human gets up no matter how quiet it is
+    if (h.phase === 'asleep' || h.phase === 'stirring') {
+      if (!this.tripAnnounced && this.time >= this.scheduledTripAt - 5) { this.tripAnnounced = true; this.logEv('You hear the bed creak…', 'bad'); }
+      if (this.tripAnnounced && this.time >= this.scheduledTripAt && this.scheduledTripAt > 0) {
+        this.scheduledTripAt = 0;
+        this.wake('bathroom', 'patrol', 'FOOTSTEPS. The human is up for the bathroom. Hide.');
+        return;
+      }
+    }
     if (h.phase === 'asleep') {
-      if (this.suspicion >= 35) { h.phase = 'stirring'; this.logEv('You hear the bed creak…', 'bad'); }
+      if (this.suspicion >= B.stirAt) { h.phase = 'stirring'; this.logEv('You hear the bed creak…', 'bad'); }
       return;
     }
     if (h.phase === 'stirring') {
-      if (this.suspicion < 25) { h.phase = 'asleep'; this.logEv('The human rolls over. Phew.', 'info'); }
-      else if (this.suspicion >= 60) { h.phase = 'patrol'; h.idx = 0; h.x = HUMAN_PATROL[0].x; h.y = HUMAN_PATROL[0].y; this.logEv('FOOTSTEPS. The human is up. Hide.', 'bad'); this.broadcast({ t: 'toast', text: 'The human is up. HIDE.', kind: 'bad' }); }
+      if (this.suspicion < B.sleepBelow) { h.phase = 'asleep'; this.logEv('The human rolls over. Phew.', 'info'); }
+      else if (this.suspicion >= B.patrolAt) this.wake(this.pickRoute(), 'patrol', 'FOOTSTEPS. The human is up. Hide.');
       return;
     }
-    if (h.phase === 'patrol' || h.phase === 'returning') {
-      const target = HUMAN_PATROL[h.idx];
-      const speed = 2.6;
-      const dx = target.x - h.x, dy = target.y - h.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 0.1) {
-        h.idx++;
-        if (h.idx >= HUMAN_PATROL.length) {
-          if (this.suspicion < 45) { h.phase = 'asleep'; h.x = HUMAN_BED.x; h.y = HUMAN_BED.y; this.logEv('The human went back to bed.', 'good'); }
-          else h.idx = 1;
+    // patrol or hunt
+    const hunting = h.phase === 'hunt';
+    const speed = hunting ? B.human.hunt : B.human.walk;
+    const target = h.route[h.idx];
+    const dx = target.x - h.x, dy = target.y - h.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.1) {
+      if (target.wait && h.waitUntil === 0) h.waitUntil = this.time + target.wait;
+      if (h.waitUntil === 0 || this.time >= h.waitUntil) {
+        h.waitUntil = 0; h.idx++;
+        if (h.idx >= h.route.length) {
+          if (hunting) this.backToBed(true);
+          else if (this.suspicion < B.keepPatrollingAbove) this.backToBed(false);
+          else { h.route = HUMAN_ROUTES[this.pickRoute()]; h.idx = 4; this.logEv('The human is still prowling.', 'bad'); }
         }
-      } else {
-        const step = Math.min(d, speed * dt);
-        h.x += dx / d * step; h.y += dy / d * step;
-        h.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
       }
-      if (h.sprayCd <= 0) {
-        for (const p of this.players.values()) {
-          if (this.time < p.stunnedUntil) continue;
-          if (dist(p.x, p.y, h.x, h.y) <= 3.2 && hasLOS(h.x, h.y, p.x, p.y)) {
-            this.spray(p); h.sprayCd = 1.5;
-            break;
-          }
-        }
+    } else {
+      const step = Math.min(d, speed * dt);
+      h.x += dx / d * step; h.y += dy / d * step;
+      h.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    }
+    if (h.sprayCd <= 0 && h.idx > 1) {
+      const range = hunting ? B.human.huntSprayRange : B.human.sprayRange;
+      for (const p of this.players.values()) {
+        if (this.time < p.stunnedUntil) continue;
+        if (dist(p.x, p.y, h.x, h.y) <= range && hasLOS(h.x, h.y, p.x, p.y)) { this.spray(p, hunting); h.sprayCd = B.human.sprayCooldown; break; }
       }
     }
   }
 
-  private spray(p: PlayerState) {
-    p.sprays++; p.stunnedUntil = this.time + 3; p.dominance -= 5;
-    this.chaos = Math.max(0, this.chaos - 15); p.chaos -= 15;
+  private spray(p: PlayerState, hunting: boolean) {
+    const S = BAL.spray;
+    const cost = hunting ? S.huntChaos : S.chaos;
+    p.sprays++; p.stunnedUntil = this.time + S.stun; p.dominance -= S.dominance;
+    this.chaos = Math.max(0, this.chaos - cost); p.chaos -= cost;
     if (p.onVent) { p.onVent = false; if (this.ventOccupant === p.id) this.ventOccupant = null; }
     if (p.carryingMouse) this.dropMouse(p);
     this.cancelPendingFor(p.id);
-    this.warp(p, CAT_BED.x, CAT_BED.y);
-    this.send(p.id, { t: 'toast', text: 'SPRAYED. Back to the cat bed with you.', kind: 'bad' });
-    this.logEv(`${p.name} got the spray bottle. -15.`, 'bad');
+    if (!hunting) this.suspicion = Math.max(this.suspicion, S.suspicionFloor);
+    this.warp(p, LITTER.x, LITTER.y);
+    this.send(p.id, { t: 'toast', text: `SPRAYED. -${cost}. Dumped by the litter box.`, kind: 'bad' });
+    this.logEv(`${p.name} got the spray bottle. -${cost}.`, 'bad');
   }
 
-  private end(reason: string, busted: boolean) {
-    if (busted) this.chaos = Math.round(this.chaos * 0.5);
+  /** Suspicion hit 100. First time: lights on and a fast, angry lap. Second time: shift over. */
+  private bust() {
+    this.busts++;
+    if (this.busts >= 2) return this.end('THE HUMANS ARE AWAKE. Lights on for good. Everyone scatter.');
+    this.chaos = Math.round(this.chaos * BAL.bust.chaosMultiplier);
+    this.suspicion = BAL.bust.resetTo;
+    this.wake('hallway', 'hunt', 'LIGHTS ON. The human is furious. HIDE.');
+    this.logEv(`Chaos -${Math.round((1 - BAL.bust.chaosMultiplier) * 100)}%. One more and the shift is over.`, 'bad');
+  }
+
+  private end(reason: string) {
     this.endReason = reason;
     this.phase = 'results';
     for (const p of this.players.values()) p.busy = false;
@@ -453,7 +569,7 @@ export class Sim {
     return {
       phase: this.phase, time: this.time, timeLeft: this.timeLeft, suspicion: this.suspicion, chaos: Math.round(this.chaos),
       players: [...this.players.values()].map(p => ({ ...p, chaos: Math.round(p.chaos), dominance: Math.round(p.dominance) })),
-      objects: this.objects, objectives: this.objectives,
+      objects: this.objects, objectives: this.objectives, board: this.board, busts: this.busts,
       human: { phase: this.human.phase, x: this.human.x, y: this.human.y, dir: this.human.dir },
       mouse: { x: this.mouse.x, y: this.mouse.y, carrier: this.mouse.carrier, visible: this.mouse.visible },
       log: this.log, ventOccupant: this.ventOccupant, endReason: this.endReason, departed: this.departed,
@@ -461,18 +577,24 @@ export class Sim {
   }
 }
 
-function pickObjectives(playerCount: number): Objective[] {
-  const pool: Objective[] = [
-    { id: 'knock3', text: 'Knock 3 things off counters', target: 3, progress: 0, done: false },
-    { id: 'cabinet', text: 'Open the treat cabinet', target: 1, progress: 0, done: false },
-    { id: 'mouse', text: "Leave the toy mouse on the human's pillow", target: 1, progress: 0, done: false },
-    { id: 'tp', text: 'Unroll the toilet paper', target: 1, progress: 0, done: false },
-    { id: 'stare', text: 'Win a staring contest at the window', target: 1, progress: 0, done: false },
-    { id: 'hairball', text: 'Perfect hairball on the good rug', target: 1, progress: 0, done: false },
-    { id: 'zoomies2', text: 'Two zoomies runs down the hallway', target: 2, progress: 0, done: false },
-    { id: 'vent', text: 'Hold the heating vent 20s (team total)', target: 20, progress: 0, done: false },
+/** Objective pool with targets as a function of cat count and board tier (later boards ask for one more). */
+export function objectivePool(n: number, tier: number): Objective[] {
+  const mk = (id: string, text: string, target: number): Objective => ({ id, text, target, progress: 0, done: false });
+  const knock = Math.min(7, 2 + n + tier);
+  const zoom = 1 + Math.ceil(n / 2) + tier;
+  const hair = (n >= 3 ? 2 : 1) + tier;
+  const stare = (n >= 4 ? 2 : 1) + tier;
+  const mouse = (n >= 4 ? 2 : 1) + (tier > 0 ? 1 : 0);
+  const pool = [
+    mk('knock', `Knock ${knock} things off (kitchen, bedroom, office)`, knock),
+    mk('cabinet', 'Open the treat cabinet (kitchen)', 1),
+    mk('mouse', mouse > 1 ? `Toy mouse onto the human's pillow, ${mouse} times (laundry → bedroom)` : "Toy mouse onto the human's pillow (laundry → bedroom)", mouse),
+    mk('tp', 'Unroll the toilet paper (bathroom)', 1),
+    mk('stare', stare > 1 ? `Win ${stare} staring contests at the window (living room)` : 'Win a staring contest at the window (living room)', stare),
+    mk('hairball', hair > 1 ? `${hair} perfect hairballs on the good rug (living room)` : 'Perfect hairball on the good rug (living room)', hair),
+    mk('zoomies', `${zoom} zoomies runs down the hallway`, zoom),
+    mk('vent', `Hold the heating vent ${20 + 10 * tier}s total (living room)`, 20 + 10 * tier),
   ];
-  if (playerCount >= 2) pool.push({ id: 'lick', text: 'Groom a teammate (they must hold still)', target: 1, progress: 0, done: false });
-  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-  return pool.slice(0, 3);
+  if (n >= 2) { const l = Math.ceil(n / 2) + tier; pool.push(mk('lick', l > 1 ? `Groom teammates ${l} times (they must hold still)` : 'Groom a teammate (they must hold still)', l)); }
+  return pool;
 }

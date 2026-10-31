@@ -26,6 +26,8 @@ const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 /** set by main.ts so hints can name the right control */
 export const hints = { touch: false };
 const K = (kb: string, touch: string) => hints.touch ? touch : kb;
+/** touch adds 60-100 ms of latency, so timing windows get a little wider on phones */
+const LENIENCY = () => hints.touch ? 1.3 : 1;
 
 // ---- shared drawing helpers ----
 function panel(ctx: CanvasRenderingContext2D, w: number, h: number, title: string, hint: string, timeLeft: number) {
@@ -62,7 +64,7 @@ export class Swipe extends Minigame {
     this.pos += this.dirn * sp * dt;
     if (this.pos > 1) { this.pos = 1; this.dirn = -1; } if (this.pos < 0) { this.pos = 0; this.dirn = 1; }
     if (input.action) {
-      const half = Number(this.spec.params.zone) / 2;
+      const half = Number(this.spec.params.zone) * LENIENCY() / 2;
       const d = Math.abs(this.pos - this.zone);
       const ok = d <= half;
       this.result = { success: ok, quality: ok ? 1 - d / half : 0 };
@@ -70,14 +72,21 @@ export class Swipe extends Minigame {
     }
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE when the paw is in the green. Too hard and it shatters.', 'TAP when the paw is in the green. Too hard and it shatters.'), this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE in the green: dead centre is quiet, the edges are a crash. Miss and nothing falls.', 'TAP in the green: dead centre is quiet, the edges are a crash. Miss and nothing falls.'), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
-    const half = Number(this.spec.params.zone) / 2;
-    ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - half) * bw, by, half * 2 * bw, 26);
+    const half = Number(this.spec.params.zone) * LENIENCY() / 2;
+    const crash = Number(this.spec.params.crash ?? 0.3);
+    ctx.fillStyle = '#b8a040'; ctx.fillRect(bx + (this.zone - half) * bw, by, half * 2 * bw, 26);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - half * (1 - crash)) * bw, by, half * 2 * (1 - crash) * bw, 26);
     ctx.fillStyle = '#f4c95d'; ctx.fillRect(bx + this.pos * bw - 4, by - 8, 8, 42);
     ctx.font = '26px serif'; ctx.textAlign = 'center'; ctx.fillText('🐾', bx + this.pos * bw, by - 14);
-    resultBanner(ctx, w, by + 80, this.result);
+    if (this.result) {
+      ctx.font = 'bold 28px system-ui, sans-serif'; ctx.textAlign = 'center';
+      if (!this.result.success) { ctx.fillStyle = '#ff7b7b'; ctx.fillText(this.result.timedOut ? 'WALKED AWAY' : 'MISS', w / 2, by + 80); }
+      else if (this.result.quality < crash) { ctx.fillStyle = '#f4c95d'; ctx.fillText('CRASH!', w / 2, by + 80); }
+      else { ctx.fillStyle = '#8be28b'; ctx.fillText(this.result.quality > 0.8 ? 'PURRFECT' : 'THUNK', w / 2, by + 80); }
+    }
   }
 }
 
@@ -115,11 +124,11 @@ export class Mash extends Minigame {
 export class Pick extends Minigame {
   pin = 0; pos = 0; dirn = 1; zone = rnd(0.25, 0.75); total = Number(this.spec.params.pins);
   step(dt: number, input: Input) {
-    const sp = Number(this.spec.params.speed) * (1 + this.pin * 0.25);
+    const sp = Number(this.spec.params.speed) * (1 + this.pin * 0.15);
     this.pos += this.dirn * sp * dt;
     if (this.pos > 1) { this.pos = 1; this.dirn = -1; } if (this.pos < 0) { this.pos = 0; this.dirn = 1; }
     if (input.action) {
-      if (Math.abs(this.pos - this.zone) <= 0.1) {
+      if (Math.abs(this.pos - this.zone) <= 0.1 * LENIENCY()) {
         this.pin++; this.zone = rnd(0.2, 0.8); this.pos = 0; this.dirn = 1; this.ping('#8be28b');
         if (this.pin >= this.total) this.result = { success: true, quality: 1 };
       } else { this.pin = Math.max(0, this.pin - 1); this.ping('#ff7b7b'); }
@@ -129,7 +138,7 @@ export class Pick extends Minigame {
     const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE in the green for each latch. A teammate nearby halves the latches.', 'TAP in the green for each latch. A teammate nearby halves the latches.'), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
-    ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - 0.1) * bw, by, 0.2 * bw, 26);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - 0.1 * LENIENCY()) * bw, by, 0.2 * LENIENCY() * bw, 26);
     ctx.fillStyle = this.flash > 0 ? this.flashColor : '#f4c95d'; ctx.fillRect(bx + this.pos * bw - 4, by - 8, 8, 42);
     for (let i = 0; i < this.total; i++) {
       ctx.fillStyle = i < this.pin ? '#8be28b' : '#555';
@@ -177,7 +186,7 @@ const BAITS = ['PRESS SPACE NOW', '[E] continue', 'press any key', 'QUICK! SPACE
 export class Stare extends Minigame {
   bait = ''; baitT = 0; nextBait = 0.8;
   step(dt: number, input: Input) {
-    if (input.anyPressed) { this.result = { success: false, quality: 0 }; this.ping('#ff7b7b'); return; }
+    if (input.anyPressed && this.elapsed > 0.4) { this.result = { success: false, quality: 0 }; this.ping('#ff7b7b'); return; }
     this.baitT -= dt; this.nextBait -= dt;
     if (this.nextBait <= 0) { this.bait = BAITS[Math.floor(Math.random() * BAITS.length)]; this.baitT = 0.9; this.nextBait = rnd(1.2, 2.2); }
     if (this.elapsed >= Number(this.spec.params.hold)) this.result = { success: true, quality: 1 };
@@ -201,14 +210,26 @@ export class Stare extends Minigame {
 }
 
 // ---- rhythm: licker ----
+let audio: AudioContext | null = null;
+function tick(freq: number) {
+  try {
+    audio ??= new (window.AudioContext || (window as any).webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq; o.type = 'triangle';
+    g.gain.setValueAtTime(0.12, audio.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.08);
+    o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.09);
+  } catch { /* no audio */ }
+}
 export class Rhythm extends Minigame {
   beats = Number(this.spec.params.beats); period = 60 / Number(this.spec.params.bpm); lead = 1.0;
-  hits = 0; judged = new Set<number>(); misses = 0;
+  hits = 0; judged = new Set<number>(); misses = 0; ticked = -1;
   step(_dt: number, input: Input) {
     const t = this.elapsed - this.lead;
+    const beatNow = Math.floor(t / this.period + 0.5);
+    if (t >= -this.period && beatNow !== this.ticked && beatNow < this.beats && Math.abs(t - beatNow * this.period) < 0.03) { this.ticked = beatNow; tick(beatNow < 0 ? 440 : 660); }
     if (input.was(' ') || input.was('e')) {
       const n = Math.round(t / this.period);
-      if (n >= 0 && n < this.beats && !this.judged.has(n) && Math.abs(t - n * this.period) < 0.13) { this.judged.add(n); this.hits++; this.ping('#8be28b'); }
+      if (n >= 0 && n < this.beats && !this.judged.has(n) && Math.abs(t - n * this.period) < 0.13 * LENIENCY()) { this.judged.add(n); this.hits++; this.ping('#8be28b'); }
       else { this.misses++; this.ping('#ff7b7b'); }
     }
     if (t > (this.beats - 1) * this.period + 0.3) { const q = this.hits / this.beats; this.result = { success: q >= 0.7, quality: q }; }
@@ -236,7 +257,7 @@ export class Rhythm extends Minigame {
 export class Balance extends Minigame {
   pos = 0; vel = 0; inZone = 0; sampled = 0;
   step(dt: number, input: Input) {
-    const drift = Number(this.spec.params.drift);
+    const drift = Number(this.spec.params.drift) / LENIENCY();
     this.vel += (Math.random() - 0.5) * drift * dt * 6 + Math.sign(this.pos) * drift * dt * 0.8;
     const push = Math.sign(input.dirX);
     this.vel += push * 2.2 * dt;

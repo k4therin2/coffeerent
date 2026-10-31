@@ -103,26 +103,53 @@ export const CAT_BED = { x: 1.5, y: 7.5 };
 export const SPAWNS = [0, 1, 2, 3].map(i => ({ x: 1.5 + i * 0.9, y: 5.5 }));
 export const MOUSE_SPAWN = { x: 15.5, y: 17.5 };
 export const HUMAN_BED = { x: 29.5, y: 2.5 };
-/** axis-aligned patrol loop for the human, all through doors */
-export const HUMAN_PATROL: { x: number; y: number }[] = [
-  { x: 29.5, y: 6.5 }, { x: 23.5, y: 6.5 }, { x: 23.5, y: 11.5 },
-  { x: 18.5, y: 11.5 }, { x: 18.5, y: 6.5 }, { x: 18.5, y: 11.5 },
-  { x: 5.5, y: 11.5 }, { x: 5.5, y: 7.5 }, { x: 5.5, y: 11.5 },
-  { x: 23.5, y: 11.5 }, { x: 23.5, y: 6.5 }, { x: 29.5, y: 6.5 },
-];
+/** where a sprayed cat lands: the litter box in the laundry, a real walk from everything */
+export const LITTER = { x: 20.5, y: 17.5 };
+
+export interface Waypoint { x: number; y: number; wait?: number }
+const OUT_OF_BED: Waypoint[] = [{ x: 29.5, y: 4.5 }, { x: 29.5, y: 6.5 }, { x: 23.5, y: 6.5 }, { x: 23.5, y: 11.5 }];
+const BACK_TO_BED: Waypoint[] = [{ x: 23.5, y: 11.5 }, { x: 23.5, y: 6.5 }, { x: 29.5, y: 6.5 }, { x: 29.5, y: 4.5 }];
+/**
+ * Axis-aligned patrol routes for the human, all through doors. Picked at random
+ * per wake-up so the house never feels safe by memory.
+ */
+export const HUMAN_ROUTES: Record<string, Waypoint[]> = {
+  // the classic hallway sweep with kitchen and living room door checks
+  hallway: [...OUT_OF_BED,
+    { x: 18.5, y: 11.5 }, { x: 18.5, y: 6.5 }, { x: 18.5, y: 11.5 },
+    { x: 5.5, y: 11.5 }, { x: 5.5, y: 7.5 }, { x: 5.5, y: 11.5 },
+    ...BACK_TO_BED],
+  // into the kitchen: puts the counter and the treat cabinet in range
+  kitchen: [...OUT_OF_BED,
+    { x: 18.5, y: 11.5 }, { x: 18.5, y: 3.5 }, { x: 16.5, y: 3.5, wait: 1.5 }, { x: 18.5, y: 3.5 }, { x: 18.5, y: 11.5 },
+    { x: 10.5, y: 11.5 }, { x: 18.5, y: 11.5 },
+    ...BACK_TO_BED],
+  // into the living room (rug and vent in range) and a glance into the bathroom
+  living: [...OUT_OF_BED,
+    { x: 5.5, y: 11.5 }, { x: 5.5, y: 7.5 }, { x: 8.5, y: 7.5 }, { x: 8.5, y: 4.5, wait: 1 }, { x: 8.5, y: 7.5 }, { x: 5.5, y: 7.5 }, { x: 5.5, y: 11.5 },
+    { x: 4.5, y: 11.5 }, { x: 4.5, y: 14.5, wait: 1 }, { x: 4.5, y: 11.5 },
+    ...BACK_TO_BED],
+  // the scheduled midnight bathroom trip
+  bathroom: [...OUT_OF_BED,
+    { x: 4.5, y: 11.5 }, { x: 4.5, y: 15.5, wait: 5 }, { x: 4.5, y: 11.5 },
+    ...BACK_TO_BED],
+};
+/** kept for scripts that import the old name */
+export const HUMAN_PATROL = HUMAN_ROUTES.hallway;
 
 export function makeObjects(): ObjectState[] {
-  const o = (id: string, kind: ObjectState['kind'], x: number, y: number, label: string): ObjectState =>
-    ({ id, kind, x: x + 0.5, y: y + 0.5, label, done: false, cooldownUntil: 0 });
+  const o = (id: string, kind: ObjectState['kind'], x: number, y: number, label: string, value?: number): ObjectState =>
+    ({ id, kind, x: x + 0.5, y: y + 0.5, label, done: false, cooldownUntil: 0, value });
   return [
-    // knockables sit ON furniture; interaction is from the adjacent tile
-    o('glass1', 'knock', 13, 1, 'wine glass'),
-    o('glass2', 'knock', 15, 1, 'coffee mug'),
-    o('glass3', 'knock', 17, 1, 'spice jar'),
-    o('glass4', 'knock', 19, 1, 'cereal bowl'),
-    o('mug', 'knock', 6, 3, 'tea cup'),
-    o('water', 'knock', 32, 1, 'bedside water'),
-    o('pens', 'knock', 30, 14, 'pen cup'),
+    // knockables sit ON furniture; interaction is from the adjacent tile.
+    // the far ones (bedroom, office) pay more for the walk.
+    o('glass1', 'knock', 13, 1, 'wine glass', 15),
+    o('glass2', 'knock', 15, 1, 'coffee mug', 15),
+    o('glass3', 'knock', 17, 1, 'spice jar', 15),
+    o('glass4', 'knock', 19, 1, 'cereal bowl', 15),
+    o('mug', 'knock', 6, 3, 'tea cup', 15),
+    o('water', 'knock', 32, 1, 'bedside water', 20),
+    o('pens', 'knock', 30, 14, 'pen cup', 20),
     o('cabinet', 'cabinet', 20, 3, 'treat cabinet'),
     o('rug', 'rug', 6, 4, 'the good rug'),
     o('tp', 'tp', 2, 14, 'toilet paper'),

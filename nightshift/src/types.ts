@@ -68,6 +68,8 @@ export interface ObjectState {
   /** sim time when usable again (0 = now) */
   cooldownUntil: number;
   busyBy?: string;
+  /** chaos paid by this object where it varies (knockables) */
+  value?: number;
 }
 
 export type ObjectKind =
@@ -83,7 +85,7 @@ export interface Objective {
 }
 
 export interface HumanState {
-  phase: 'asleep' | 'stirring' | 'patrol' | 'returning';
+  phase: 'asleep' | 'stirring' | 'patrol' | 'hunt';
   x: number;
   y: number;
   dir: Dir;
@@ -103,6 +105,10 @@ export interface Snapshot {
   phase: Phase;
   /** players who left mid-round, kept for the results screen */
   departed: Departed[];
+  /** which objective board the team is on (1 = first) */
+  board: number;
+  /** how many busts so far this round (the second one ends the shift) */
+  busts: number;
   time: number;        // sim seconds elapsed
   timeLeft: number;
   suspicion: number;   // 0..100

@@ -2,7 +2,7 @@ import {
   type CatId, type ClientMsg, type HostMsg, type LogEvent, type MinigameSpec, type Objective,
   type ObjectState, type Phase, type PlayerState, type Snapshot, type HumanState, CAT_IDS, CAT_NAMES, ROUND_SECONDS,
 } from './types';
-import { CAT_BED, HUMAN_BED, HUMAN_PATROL, MOUSE_SPAWN, hasLOS, makeObjects } from './map';
+import { CAT_BED, HUMAN_BED, HUMAN_PATROL, MOUSE_SPAWN, SPAWNS, hasLOS, makeObjects } from './map';
 
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -50,7 +50,7 @@ export class Sim {
     const taken = new Set([...this.players.values()].map(p => p.cat));
     const cat = taken.has(wantCat) ? CAT_IDS.find(c => !taken.has(c))! : wantCat;
     const p: PlayerState = {
-      id, name: name.slice(0, 14) || CAT_NAMES[cat], cat, x: CAT_BED.x + 1 + this.players.size * 0.8, y: CAT_BED.y - 1,
+      id, name: name.slice(0, 14) || CAT_NAMES[cat], cat, x: SPAWNS[this.players.size].x, y: SPAWNS[this.players.size].y,
       dir: 'down', moving: false, stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, ignorePosUntil: 0,
       dominance: 0, chaos: 0, sprays: 0, connected: true,
     };
@@ -61,15 +61,13 @@ export class Sim {
   removePlayer(id: string) {
     const p = this.players.get(id);
     if (!p) return;
-    if (this.phase === 'lobby') this.players.delete(id);
-    else {
-      p.connected = false;
-      if (this.ventOccupant === id) this.ventOccupant = null;
-      if (this.mouse.carrier === id) { this.mouse.carrier = null; this.mouse.visible = true; this.mouse.x = p.x; this.mouse.y = p.y; }
-      this.players.delete(id);
-      this.logEv(`${p.name} wandered off (disconnected).`, 'info');
-    }
-    this.sendLobby();
+    if (this.phase === 'lobby') { this.players.delete(id); this.sendLobby(); return; }
+    p.connected = false;
+    if (this.ventOccupant === id) this.ventOccupant = null;
+    if (this.mouse.carrier === id) this.dropMouse(p);
+    this.cancelPendingFor(id);
+    this.players.delete(id);
+    this.logEv(`${p.name} wandered off (disconnected).`, 'info');
   }
   setCat(id: string, cat: CatId) {
     const p = this.players.get(id);
@@ -94,7 +92,7 @@ export class Sim {
     let i = 0;
     for (const p of this.players.values()) {
       Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0 });
-      this.warp(p, CAT_BED.x + 1 + i * 0.9, CAT_BED.y - 1.5 + (i % 2));
+      this.warp(p, SPAWNS[i].x, SPAWNS[i].y);
       i++;
     }
     this.objectives = pickObjectives(this.players.size);
@@ -123,7 +121,7 @@ export class Sim {
         if (this.phase === 'playing') this.use(p, m.target);
         return;
       case 'mgdone':
-        this.finishMinigame(p, m.token, m.success, clamp(m.quality, 0, 1));
+        this.finishMinigame(p, m.token, m.success, clamp(Number(m.quality) || 0, 0, 1), !!m.timedOut);
         return;
       case 'pickcat':
         this.setCat(pid, m.cat);
@@ -132,6 +130,37 @@ export class Sim {
   }
 
   private obj(id: string): ObjectState { return this.objects.find(o => o.id === id)!; }
+  private dropMouse(p: PlayerState) {
+    p.carryingMouse = false;
+    this.mouse.carrier = null; this.mouse.visible = true; this.mouse.x = p.x; this.mouse.y = p.y;
+    this.mouse.respawnAt = this.time + 40; // a dropped mouse finds its way home eventually
+  }
+  /** Cancel every pending minigame for a player (spray, disconnect). Pairs resolve as a fail for that side. */
+  private cancelPendingFor(pid: string) {
+    for (const pend of [...this.pending.values()]) {
+      if (pend.pid !== pid) continue;
+      this.pending.delete(pend.token);
+      if (pend.spec.objectId) this.obj(pend.spec.objectId).busyBy = undefined;
+      this.send(pid, { t: 'mgcancel', token: pend.token });
+      if (pend.pairId !== undefined) this.pairResult(pend.pairId, pid, false);
+    }
+    const p = this.players.get(pid);
+    if (p) p.busy = false;
+  }
+  private pairResult(pairId: number, pid: string, success: boolean) {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return;
+    pair.results[pid] = success;
+    const a = pair.results[pair.licker], b = pair.results[pair.lickee];
+    if (a === undefined || b === undefined) return;
+    this.pairs.delete(pair.id);
+    const licker = this.players.get(pair.licker), lickee = this.players.get(pair.lickee);
+    if (!licker) return;
+    const lickeeName = lickee?.name ?? 'the other cat';
+    if (a && b && lickee) { this.score(licker, 25, 12); lickee.dominance -= 3; this.progress('lick'); this.logEv(`${licker.name} groomed ${lickee.name}. ${lickee.name} allowed it.`, 'dom'); }
+    else if (a && !b) { this.score(licker, 8, 2); this.logEv(`${lickeeName} squirmed away from ${licker.name}.`, 'info'); }
+    else { this.score(licker, 3, -2); this.noise(3); this.logEv(`${licker.name} tried to groom ${lickeeName} and got bapped.`, 'bad'); }
+  }
   private warp(p: PlayerState, x: number, y: number) {
     p.x = x; p.y = y; p.moving = false; p.ignorePosUntil = this.time + 0.7;
     this.send(p.id, { t: 'warp', x, y });
@@ -165,7 +194,8 @@ export class Sim {
     if (target.startsWith('player:')) return this.tryLick(p, target.slice(7));
     const o = this.objects.find(o => o.id === target);
     if (!o) return;
-    if (dist(p.x, p.y, o.x, o.y) > 1.6) return;
+    const tx = o.kind === 'mouse' ? this.mouse.x : o.x, ty = o.kind === 'mouse' ? this.mouse.y : o.y;
+    if (dist(p.x, p.y, tx, ty) > 1.6) return;
     if (o.busyBy || this.time < o.cooldownUntil) return;
     switch (o.kind) {
       case 'knock':
@@ -189,8 +219,7 @@ export class Sim {
         return this.useVent(p, o);
       case 'mouse':
         if (this.mouse.carrier || !this.mouse.visible) return;
-        if (dist(p.x, p.y, this.mouse.x, this.mouse.y) > 1.6) return;
-        this.mouse.carrier = p.id; this.mouse.visible = false; p.carryingMouse = true;
+        this.mouse.carrier = p.id; this.mouse.respawnAt = 0; this.mouse.visible = false; p.carryingMouse = true;
         this.logEv(`${p.name} picked up the toy mouse.`, 'info');
         return;
       case 'pillow':
@@ -223,7 +252,7 @@ export class Sim {
 
   private tryLick(p: PlayerState, otherId: string) {
     const q = this.players.get(otherId);
-    if (!q || q.busy || this.time < q.stunnedUntil) return;
+    if (!q || q.id === p.id || q.busy || this.time < q.stunnedUntil) return;
     if (dist(p.x, p.y, q.x, q.y) > 1.6) return;
     const key = [p.id, q.id].sort().join('|');
     if ((this.lickCd.get(key) ?? 0) > this.time) return;
@@ -245,7 +274,7 @@ export class Sim {
     this.send(p.id, { t: 'mgstart', spec: full });
   }
 
-  private finishMinigame(p: PlayerState, token: number, success: boolean, quality: number) {
+  private finishMinigame(p: PlayerState, token: number, success: boolean, quality: number, timedOut = false) {
     const pend = this.pending.get(token);
     if (!pend || pend.pid !== p.id) return;
     this.pending.delete(token);
@@ -257,6 +286,7 @@ export class Sim {
     switch (spec.kind) {
       case 'swipe':
         if (!o) break;
+        if (timedOut) { o.cooldownUntil = this.time + 4; this.noise(2); break; } // walked away, nothing fell
         o.done = true; o.cooldownUntil = this.time + 50;
         this.progress('knock3');
         if (success) { this.score(p, 15, 4); this.noise(5); this.logEv(`${p.name} nudged the ${o.label} off. Thunk.`, 'good'); }
@@ -294,26 +324,16 @@ export class Sim {
           this.logEv(quality >= 0.9 ? `${p.name} did PERFECT zoomies. The floor shook.` : `${p.name} did zoomies (${Math.round(quality * 100)}%).`, quality >= 0.9 ? 'good' : 'info'); }
         break;
       case 'rhythm':
-      case 'balance': {
-        const pair = pend.pairId !== undefined ? this.pairs.get(pend.pairId) : undefined;
-        if (!pair) break;
-        pair.results[p.id] = success;
-        const a = pair.results[pair.licker], b = pair.results[pair.lickee];
-        if (a === undefined || b === undefined) break;
-        this.pairs.delete(pair.id);
-        const licker = this.players.get(pair.licker), lickee = this.players.get(pair.lickee);
-        if (!licker || !lickee) break;
-        if (a && b) { this.score(licker, 25, 12); lickee.chaos += 0; lickee.dominance -= 3; this.progress('lick'); this.logEv(`${licker.name} groomed ${lickee.name}. ${lickee.name} allowed it.`, 'dom'); }
-        else if (a && !b) { this.score(licker, 8, 2); this.logEv(`${lickee.name} squirmed away from ${licker.name}.`, 'info'); }
-        else { this.score(licker, 3, -2); this.noise(3); this.logEv(`${licker.name} tried to groom ${lickee.name} and got bapped.`, 'bad'); }
+      case 'balance':
+        if (pend.pairId !== undefined) this.pairResult(pend.pairId, p.id, success);
         break;
-      }
     }
   }
 
   // ---------- tick ----------
   tick(dt: number) {
     if (this.phase !== 'playing') return;
+    if (this.suspicion >= 100) return this.end('THE HUMANS ARE AWAKE. Lights on. Everyone scatter.', true);
     this.time += dt;
     this.timeLeft = Math.max(0, ROUND_SECONDS - this.time);
     this.suspicion = clamp(this.suspicion - 1.2 * dt, 0, 100);
@@ -326,12 +346,13 @@ export class Sim {
         if (p) p.busy = false;
         if (pend.spec.objectId) this.obj(pend.spec.objectId).busyBy = undefined;
         this.send(pend.pid, { t: 'mgcancel', token: pend.token });
+        if (pend.pairId !== undefined) this.pairResult(pend.pairId, pend.pid, false);
       }
     }
     // object respawns
     for (const o of this.objects) if (o.done && o.cooldownUntil && this.time > o.cooldownUntil) { o.done = false; o.cooldownUntil = 0; }
     // mouse respawn
-    if (!this.mouse.visible && !this.mouse.carrier && this.mouse.respawnAt && this.time > this.mouse.respawnAt) {
+    if (!this.mouse.carrier && this.mouse.respawnAt && this.time > this.mouse.respawnAt) {
       this.mouse.visible = true; this.mouse.x = MOUSE_SPAWN.x; this.mouse.y = MOUSE_SPAWN.y; this.mouse.respawnAt = 0;
     }
     // vent
@@ -342,7 +363,6 @@ export class Sim {
     }
     this.tickHuman(dt);
 
-    if (this.suspicion >= 100) return this.end('THE HUMANS ARE AWAKE. Lights on. Everyone scatter.', true);
     if (this.timeLeft <= 0) return this.end('The sun came up. Shift over.', false);
   }
 
@@ -390,10 +410,8 @@ export class Sim {
     p.sprays++; p.stunnedUntil = this.time + 3; p.dominance -= 5;
     this.chaos = Math.max(0, this.chaos - 15); p.chaos -= 15;
     if (p.onVent) { p.onVent = false; if (this.ventOccupant === p.id) this.ventOccupant = null; }
-    if (p.carryingMouse) { p.carryingMouse = false; this.mouse.carrier = null; this.mouse.visible = true; this.mouse.x = p.x; this.mouse.y = p.y; }
-    // cancel any minigame
-    for (const pend of [...this.pending.values()]) if (pend.pid === p.id) { this.pending.delete(pend.token); if (pend.spec.objectId) this.obj(pend.spec.objectId).busyBy = undefined; this.send(p.id, { t: 'mgcancel', token: pend.token }); }
-    p.busy = false;
+    if (p.carryingMouse) this.dropMouse(p);
+    this.cancelPendingFor(p.id);
     this.warp(p, CAT_BED.x, CAT_BED.y);
     this.send(p.id, { t: 'toast', text: 'SPRAYED. Back to the cat bed with you.', kind: 'bad' });
     this.logEv(`${p.name} got the spray bottle. -15.`, 'bad');

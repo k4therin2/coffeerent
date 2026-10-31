@@ -117,7 +117,8 @@ export type ClientMsg =
   | { t: 'pickcat'; cat: CatId }
   | { t: 'pos'; x: number; y: number; dir: Dir; moving: boolean }
   | { t: 'use'; target: string } // object id or 'player:<id>' or 'vent'
-  | { t: 'mgdone'; token: number; success: boolean; quality: number }
+  | { t: 'mgdone'; token: number; success: boolean; quality: number; timedOut?: boolean }
+  | { t: 'ping' }
   | { t: 'start' }       // host only
   | { t: 'again' };      // host only
 

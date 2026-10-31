@@ -9,6 +9,7 @@ export interface LocalView {
   dir: Dir; moving: boolean; walkPhase: number;
   others: Map<string, { x: number; y: number; dir: Dir; moving: boolean; phase: number }>;
   prompt: string | null;
+  touch: boolean;
   toasts: { text: string; kind: string; until: number }[];
   now: number;
 }
@@ -31,12 +32,20 @@ export class Renderer {
     this.paintWorld();
   }
 
+  dpr = 1;
+  /** UI scale in device pixels: keeps HUD text readable on phones */
+  ui = 1;
+  narrow = false;
   resize() {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.canvas.width = Math.floor(innerWidth * dpr); this.canvas.height = Math.floor(innerHeight * dpr);
-    this.canvas.style.width = innerWidth + 'px'; this.canvas.style.height = innerHeight + 'px';
+    const dpr = this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cw = innerWidth, ch = innerHeight;
+    this.canvas.width = Math.floor(cw * dpr); this.canvas.height = Math.floor(ch * dpr);
+    this.canvas.style.width = cw + 'px'; this.canvas.style.height = ch + 'px';
     this.fog.width = this.canvas.width + 2 * this.fogPad; this.fog.height = this.canvas.height + 2 * this.fogPad;
-    this.zoom = Math.max(1.1, Math.min(2.6, this.canvas.width / (24 * TILE)));
+    // about 14 tiles across the short side, so the vision circle fills a phone screen
+    this.zoom = dpr * Math.max(0.9, Math.min(2.2, Math.min(cw, ch) / (14 * TILE)));
+    this.ui = dpr * Math.max(0.8, Math.min(1.25, cw / 1100));
+    this.narrow = cw < 700;
   }
 
   /** static layer: floors, walls, furniture */
@@ -239,7 +248,7 @@ export class Renderer {
   }
 
   private hud(ctx: CanvasRenderingContext2D, snap: Snapshot, v: LocalView, W: number, H: number) {
-    const z = Math.max(1, Math.min(2, W / 1100));
+    const z = this.ui;
     ctx.textAlign = 'left';
     // top bar
     ctx.fillStyle = 'rgba(8,6,16,0.75)'; roundRect(ctx, 14 * z, 14 * z, 330 * z, 92 * z, 12 * z); ctx.fill();
@@ -257,47 +266,52 @@ export class Renderer {
     ctx.fillStyle = hp === 'asleep' ? '#8be28b' : hp === 'stirring' ? '#ffb347' : '#ff5e5e'; ctx.font = `bold ${12 * z}px system-ui, sans-serif`;
     ctx.textAlign = 'right'; ctx.fillText(hp === 'asleep' ? 'zzz' : hp === 'stirring' ? 'STIRRING' : 'AWAKE', 330 * z, 70 * z);
 
-    // objectives (right)
-    const ow = 300 * z, ox = W - ow - 14 * z;
-    const oh = (34 + snap.objectives.length * 22) * z;
-    ctx.fillStyle = 'rgba(8,6,16,0.75)'; roundRect(ctx, ox, 14 * z, ow, oh, 12 * z); ctx.fill();
-    ctx.textAlign = 'left'; ctx.fillStyle = '#f4c95d'; ctx.font = `bold ${13 * z}px system-ui, sans-serif`; ctx.fillText('TONIGHT\'S OBJECTIVES', ox + 14 * z, 36 * z);
-    ctx.font = `${13 * z}px system-ui, sans-serif`;
+    // objectives (right on wide screens, under the top bar on phones)
+    const ow = this.narrow ? Math.min(330 * z, W - 28 * z) : 300 * z;
+    const ox = this.narrow ? 14 * z : W - ow - 14 * z;
+    const oy = this.narrow ? 114 * z : 14 * z;
+    const lineH = this.narrow ? 19 : 22;
+    const oh = (34 + snap.objectives.length * lineH) * z;
+    ctx.fillStyle = 'rgba(8,6,16,0.75)'; roundRect(ctx, ox, oy, ow, oh, 12 * z); ctx.fill();
+    ctx.textAlign = 'left'; ctx.fillStyle = '#f4c95d'; ctx.font = `bold ${12 * z}px system-ui, sans-serif`; ctx.fillText('TONIGHT\'S OBJECTIVES', ox + 14 * z, oy + 22 * z);
+    ctx.font = `${this.narrow ? 12 : 13}px system-ui, sans-serif`.replace(/^(\d+)px/, (_, n) => `${Number(n) * z}px`);
     snap.objectives.forEach((o, i) => {
       ctx.fillStyle = o.done ? '#8be28b' : '#eee';
       const prog = o.target > 1 ? ` (${Math.floor(o.progress)}/${o.target})` : '';
-      ctx.fillText(`${o.done ? '☑' : '☐'} ${o.text}${prog}`, ox + 14 * z, (58 + i * 22) * z);
+      ctx.fillText(`${o.done ? '☑' : '☐'} ${o.text}${prog}`, ox + 14 * z, oy + (44 + i * lineH) * z);
     });
     // my stats under objectives
     if (v.me) {
       const me = snap.players.find(p => p.id === v.me!.id);
       if (me) {
-        ctx.fillStyle = 'rgba(8,6,16,0.6)'; roundRect(ctx, ox, 14 * z + oh + 8 * z, ow, 26 * z, 8 * z); ctx.fill();
+        ctx.fillStyle = 'rgba(8,6,16,0.6)'; roundRect(ctx, ox, oy + oh + 8 * z, ow, 26 * z, 8 * z); ctx.fill();
         ctx.fillStyle = '#ccc'; ctx.font = `${12 * z}px system-ui, sans-serif`;
-        ctx.fillText(`${me.name} · chaos ${me.chaos} · dominance ${me.dominance}${me.carryingMouse ? ' · 🐭 carrying mouse' : ''}`, ox + 14 * z, 14 * z + oh + 26 * z);
+        ctx.fillText(`${me.name} · chaos ${me.chaos} · dominance ${me.dominance}${me.carryingMouse ? ' · 🐭 carrying mouse' : ''}`, ox + 14 * z, oy + oh + 26 * z);
       }
     }
 
     // log (bottom left)
     ctx.font = `${13 * z}px system-ui, sans-serif`;
-    const recent = snap.log.slice(-5);
+    const recent = snap.log.slice(v.touch ? -3 : -5);
+    const logBase = v.touch ? 290 : 0;
     recent.forEach((e, i) => {
       const age = snap.time - e.t;
       const alpha = Math.max(0, Math.min(1, 1 - (age - 8) / 4));
       if (alpha <= 0) return;
       ctx.fillStyle = `rgba(8,6,16,${0.7 * alpha})`;
       const tw = ctx.measureText(e.text).width + 20 * z;
-      roundRect(ctx, 14 * z, H - (30 + (recent.length - 1 - i) * 24) * z, tw, 20 * z, 6 * z); ctx.fill();
+      roundRect(ctx, 14 * z, H - (logBase + 30 + (recent.length - 1 - i) * 24) * z, Math.min(tw, W - 28 * z), 20 * z, 6 * z); ctx.fill();
       ctx.fillStyle = { info: `rgba(230,230,230,${alpha})`, good: `rgba(139,226,139,${alpha})`, bad: `rgba(255,123,123,${alpha})`, dom: `rgba(244,201,93,${alpha})` }[e.kind];
-      ctx.fillText(e.text, 24 * z, H - (16 + (recent.length - 1 - i) * 24) * z);
+      ctx.fillText(e.text, 24 * z, H - (logBase + 16 + (recent.length - 1 - i) * 24) * z);
     });
 
     // prompt
     if (v.prompt) {
+      const py = v.touch ? H - 150 * z : H - 70 * z;
       ctx.font = `bold ${15 * z}px system-ui, sans-serif`; ctx.textAlign = 'center';
-      const tw = ctx.measureText(v.prompt).width + 28 * z;
-      ctx.fillStyle = 'rgba(8,6,16,0.85)'; roundRect(ctx, W / 2 - tw / 2, H - 70 * z, tw, 30 * z, 8 * z); ctx.fill();
-      ctx.fillStyle = '#f4c95d'; ctx.fillText(v.prompt, W / 2, H - 49 * z);
+      const tw = Math.min(W - 20 * z, ctx.measureText(v.prompt).width + 28 * z);
+      ctx.fillStyle = 'rgba(8,6,16,0.85)'; roundRect(ctx, W / 2 - tw / 2, py, tw, 30 * z, 8 * z); ctx.fill();
+      ctx.fillStyle = '#f4c95d'; ctx.fillText(v.prompt, W / 2, py + 21 * z);
     }
     // toasts
     v.toasts.forEach((t, i) => {

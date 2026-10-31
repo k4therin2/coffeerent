@@ -58,8 +58,10 @@ function wrapConn(conn: DataConnection): ClientLink & HostLink {
 export function hostRoom(code: string, onClient: (c: ClientLink) => void): Promise<Peer> {
   return new Promise((resolve, reject) => {
     const peer = new Peer(PREFIX + code, { debug: 1 });
-    peer.on('open', () => resolve(peer));
-    peer.on('error', (e) => reject(e));
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; peer.destroy(); reject(new Error('signaling timeout')); } }, 10000);
+    peer.on('open', () => { if (!settled) { settled = true; clearTimeout(timer); resolve(peer); } });
+    peer.on('error', (e) => { if (!settled) { settled = true; clearTimeout(timer); peer.destroy(); reject(e); } });
     peer.on('connection', (conn) => {
       conn.on('open', () => onClient(wrapConn(conn)));
     });
@@ -78,10 +80,17 @@ export function joinRoom(code: string): Promise<{ peer: Peer; link: HostLink }> 
       conn.on('open', () => {
         if (settled) return;
         settled = true; clearTimeout(timer);
-        resolve({ peer, link: wrapConn(conn) });
+        const link = wrapConn(conn);
+        const close = link.close;
+        link.close = () => { close(); peer.destroy(); };
+        resolve({ peer, link });
       });
-      conn.on('error', (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
+      conn.on('error', (e) => { if (!settled) { settled = true; clearTimeout(timer); peer.destroy(); reject(e); } });
     });
-    peer.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
+    peer.on('error', (e: any) => {
+      if (settled) return;
+      settled = true; peer.destroy();
+      reject(e?.type === 'peer-unavailable' ? new Error('No room with that code is open right now.') : e);
+    });
   });
 }

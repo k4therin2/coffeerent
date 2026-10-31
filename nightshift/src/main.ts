@@ -4,7 +4,8 @@ import { Sim } from './sim';
 import { hostRoom, joinRoom, loopback, randomCode, type ClientLink, type HostLink } from './net';
 import { Renderer, type LocalView } from './render';
 import { Input } from './input';
-import { makeMinigame, type Minigame } from './minigames';
+import { makeMinigame, hints, type Minigame } from './minigames';
+import { TouchControls, type TouchMode } from './touch';
 import { drawCat } from './cats';
 import { isSolid } from './map';
 
@@ -12,7 +13,11 @@ const ui = document.getElementById('ui')!;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const renderer = new Renderer(canvas);
 const input = new Input();
-addEventListener('resize', () => renderer.resize());
+const touch = new TouchControls(canvas, input);
+const onResize = () => renderer.resize();
+addEventListener('resize', onResize);
+addEventListener('orientationchange', () => setTimeout(onResize, 100));
+visualViewport?.addEventListener('resize', onResize);
 renderer.resize();
 
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
@@ -23,6 +28,7 @@ const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax -
 class Host {
   sim: Sim;
   links = new Map<string, ClientLink>();
+  lastSeen = new Map<string, number>();
   peer: Peer | null = null;
   offline = false;
   private timer = 0;
@@ -34,9 +40,18 @@ class Host {
     try { this.peer = await hostRoom(this.code, (c) => this.attach(c)); }
     catch (e) { console.warn('PeerJS unavailable, offline solo mode', e); this.offline = true; }
     let last = performance.now();
+    const STEP = 1 / 30;
     this.timer = window.setInterval(() => {
-      const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
-      this.sim.tick(dt);
+      const now = performance.now();
+      let elapsed = Math.min(2, (now - last) / 1000); last = now;
+      // fixed steps with catch-up, so a throttled background tab does not slow the whole game
+      let dt = 0;
+      while (elapsed >= STEP) { this.sim.tick(STEP); elapsed -= STEP; dt += STEP; }
+      last -= elapsed * 1000;
+      // drop players whose connection went silent (closed tabs are not always reported by WebRTC)
+      for (const [id, seen] of this.lastSeen) {
+        if (id !== 'host' && now - seen > 8000) { const l = this.links.get(id); this.links.delete(id); this.lastSeen.delete(id); l?.close(); this.sim.removePlayer(id); }
+      }
       this.snapAcc += dt;
       if (this.sim.phase !== 'lobby' && this.snapAcc >= 1 / 12) {
         this.snapAcc = 0;
@@ -47,19 +62,21 @@ class Host {
   }
   attach(link: ClientLink) {
     link.onMessage = (m: ClientMsg) => {
+      this.lastSeen.set(link.id, performance.now());
+      if (m.t === 'ping') return;
       if (m.t === 'hello') {
-        if (this.sim.phase !== 'lobby') { link.send({ t: 'reject', reason: 'That room is mid-shift. Wait for the round to end.' }); return; }
+        if (this.sim.phase !== 'lobby') { link.send({ t: 'reject', reason: 'That room is mid-shift. Wait for the round to end.' }); setTimeout(() => link.close(), 300); return; }
         this.links.set(link.id, link);
         link.send({ t: 'welcome', id: link.id, code: this.code });
         const p = this.sim.addPlayer(link.id, m.name, m.cat);
-        if (!p) { this.links.delete(link.id); link.send({ t: 'reject', reason: 'Room is full (4 cats max).' }); return; }
+        if (!p) { this.links.delete(link.id); link.send({ t: 'reject', reason: 'Room is full (4 cats max).' }); setTimeout(() => link.close(), 300); return; }
         return;
       }
       if (m.t === 'start') { if (link.id === 'host' && this.sim.phase === 'lobby' && this.sim.players.size > 0) this.sim.start(); return; }
       if (m.t === 'again') { if (link.id === 'host' && this.sim.phase === 'results') this.sim.backToLobby(); return; }
       this.sim.handle(link.id, m);
     };
-    link.onClose = () => { this.links.delete(link.id); this.sim.removePlayer(link.id); };
+    link.onClose = () => { this.links.delete(link.id); this.lastSeen.delete(link.id); this.sim.removePlayer(link.id); };
   }
 }
 
@@ -79,26 +96,37 @@ class Client {
   toasts: { text: string; kind: string; until: number }[] = [];
   now = 0;
   private posAcc = 0;
+  private pingTimer = 0;
+  private lastSnapAt = 0;
   error = '';
 
   constructor(public link: HostLink, public name: string, public cat: CatId, public isHost: boolean, public code: string, public offline: boolean) {
     link.onMessage = (m) => this.onMessage(m);
-    link.onClose = (r) => { this.error = 'Lost connection to the host (' + r + ').'; this.screen = 'connecting'; renderMenu(this.error); };
+    link.onClose = (r) => {
+      if (client !== this) return; // a newer session replaced this one
+      clearInterval(this.pingTimer);
+      client = null; this.error = 'Lost connection to the host (' + r + ').'; this.screen = 'connecting'; renderMenu(this.error);
+    };
     link.send({ t: 'hello', name, cat });
+    this.pingTimer = window.setInterval(() => this.send({ t: 'ping' }), 2000);
   }
   send(m: ClientMsg) { this.link.send(m); }
+  dispose() { clearInterval(this.pingTimer); this.link.onClose = null; this.link.close(); }
 
   onMessage(m: HostMsg) {
     switch (m.t) {
       case 'welcome': this.id = m.id; break;
-      case 'reject': this.error = m.reason; renderMenu(m.reason); break;
+      case 'reject':
+        this.error = m.reason; this.dispose();
+        if (client === this) { client = null; renderMenu(m.reason); }
+        break;
       case 'lobby':
         this.lobby = m.players;
         if (this.screen !== 'playing') { this.screen = 'lobby'; renderLobby(this); }
         break;
       case 'snap': {
         const prev = this.snap;
-        this.snap = m.s;
+        this.snap = m.s; this.lastSnapAt = this.now;
         for (const p of m.s.players) {
           if (p.id === this.id) continue;
           const o = this.others.get(p.id);
@@ -132,6 +160,7 @@ class Client {
       if (o.moving) o.phase += dt * 14;
     }
     if (this.screen !== 'playing' || !this.snap) return;
+    if (!this.isHost && this.lastSnapAt && this.now - this.lastSnapAt > 8) { this.link.onClose?.('host went quiet'); return; }
     const me = this.me;
     const stunned = me ? this.snap.time < me.stunnedUntil : false;
 
@@ -140,7 +169,7 @@ class Client {
       if (this.minigame.result) {
         const r = this.minigame.result;
         if (this.minigame.flash <= 0 || this.minigame.elapsed > this.minigame.spec.time + 1) {
-          this.send({ t: 'mgdone', token: this.minigame.spec.token, success: r.success, quality: r.quality });
+          this.send({ t: 'mgdone', token: this.minigame.spec.token, success: r.success, quality: r.quality, timedOut: !!r.timedOut });
           this.minigame = null;
         }
       }
@@ -219,7 +248,7 @@ class Client {
     const t = this.screen === 'playing' && !this.minigame ? this.findTarget() : null;
     return {
       me: this.me, x: this.x, y: this.y, dir: this.dir, moving: this.moving, walkPhase: this.walkPhase,
-      others: this.others, prompt: t ? `[E]  ${t.prompt}` : null, toasts: this.toasts, now: this.now,
+      others: this.others, prompt: t ? (input.touch ? t.prompt : `[E]  ${t.prompt}`) : null, touch: input.touch, toasts: this.toasts, now: this.now,
     };
   }
 }
@@ -276,25 +305,28 @@ function renderMenu(error = '') {
   const codeEl = ui.querySelector('#code') as HTMLInputElement;
   const err = ui.querySelector('#err')!;
   const getName = () => { saved.name = nameEl.value.trim() || CAT_NAMES[saved.cat]; localStorage.setItem('ns-name', saved.name); localStorage.setItem('ns-cat', saved.cat); return saved.name; };
-  (ui.querySelector('#host') as HTMLButtonElement).onclick = async () => {
+  const hostBtn = ui.querySelector('#host') as HTMLButtonElement, joinBtn = ui.querySelector('#join') as HTMLButtonElement;
+  const busy = (b: boolean) => { hostBtn.disabled = b; joinBtn.disabled = b; };
+  hostBtn.onclick = async () => {
     const name = getName();
-    err.textContent = 'Opening the cat flap…';
+    busy(true); err.textContent = 'Opening the cat flap…';
     host = new Host(randomCode());
     await host.listen();
     const lb = loopback();
     host.attach(lb.server);
     client = new Client(lb.client, name, saved.cat, true, host.code, host.offline);
   };
-  (ui.querySelector('#join') as HTMLButtonElement).onclick = async () => {
+  joinBtn.onclick = async () => {
     const name = getName();
     const code = codeEl.value.trim().toUpperCase();
     if (code.length !== 4) { err.textContent = 'Room codes are 4 letters.'; return; }
-    err.textContent = 'Sniffing around for the host…';
+    busy(true); err.textContent = 'Sniffing around for the host…';
     try {
       const { link } = await joinRoom(code);
       client = new Client(link, name, saved.cat, false, code, false);
-    } catch (e: any) { err.textContent = e?.message ?? String(e); }
+    } catch (e: any) { err.textContent = e?.message ?? String(e); busy(false); }
   };
+  codeEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click(); });
   if (room) codeEl.focus(); else nameEl.focus();
 }
 
@@ -367,18 +399,31 @@ function escapeHtml(s: string) { return s.replace(/[&<>"']/g, ch => ({ '&': '&am
 // =====================================================================
 // LOOP
 // =====================================================================
+const MG_TOUCH: Record<string, TouchMode> = { swipe: 'tap', pick: 'tap', rhythm: 'tap', mash: 'mash', zoomies: 'zoomies', balance: 'balance', stare: 'stare' };
 let last = performance.now();
 let idlePhase = 0;
 function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  hints.touch = input.touch;
   if (client) {
     client.update(dt);
     const mg = client.minigame;
-    renderer.draw(client.snap, client.view(), mg ? (ctx, w, h) => mg.draw(ctx, w, h) : undefined);
+    const view = client.view();
+    touch.mode = client.screen !== 'playing' ? 'none' : mg ? MG_TOUCH[mg.spec.kind] : 'move';
+    renderer.draw(client.snap, view, (ctx, w, h) => {
+      if (mg) {
+        const k = renderer.dpr * Math.max(0.75, Math.min(1.2, innerWidth / 1280));
+        // keep the panel clear of the stacked HUD on phones and the touch buttons below
+        const top = renderer.narrow ? 300 * renderer.ui : 0, bottom = input.touch ? (renderer.narrow ? 300 : 150) * renderer.ui : 0;
+        ctx.save(); ctx.translate(0, top); ctx.scale(k, k); mg.draw(ctx, w / k, Math.max(300 * k, h - top - bottom) / k); ctx.restore();
+      }
+      touch.draw(ctx, w, h, renderer.ui, view.prompt);
+    });
   } else {
+    touch.mode = 'none';
     // idle backdrop: wander the camera a little over the dark house
     idlePhase += dt * 0.15;
-    renderer.draw(null, { me: null, x: 18 + Math.sin(idlePhase) * 10, y: 10, dir: 'down', moving: false, walkPhase: 0, others: new Map(), prompt: null, toasts: [], now });
+    renderer.draw(null, { me: null, x: 18 + Math.sin(idlePhase) * 10, y: 10, dir: 'down', moving: false, walkPhase: 0, others: new Map(), prompt: null, touch: input.touch, toasts: [], now });
   }
   input.endFrame();
   requestAnimationFrame(frame);

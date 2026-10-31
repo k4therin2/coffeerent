@@ -99,13 +99,15 @@ export function isSolid(tx: number, ty: number): boolean {
 }
 
 export const CAT_BED = { x: 1.5, y: 7.5 };
+/** spawn row: living room row 5 is clear of furniture */
+export const SPAWNS = [0, 1, 2, 3].map(i => ({ x: 1.5 + i * 0.9, y: 5.5 }));
 export const MOUSE_SPAWN = { x: 15.5, y: 17.5 };
 export const HUMAN_BED = { x: 29.5, y: 4.6 };
 /** axis-aligned patrol loop for the human, all through doors */
 export const HUMAN_PATROL: { x: number; y: number }[] = [
   { x: 29.5, y: 6.5 }, { x: 23.5, y: 6.5 }, { x: 23.5, y: 11.5 },
   { x: 18.5, y: 11.5 }, { x: 18.5, y: 6.5 }, { x: 18.5, y: 11.5 },
-  { x: 5.5, y: 11.5 }, { x: 5.5, y: 5.5 }, { x: 5.5, y: 11.5 },
+  { x: 5.5, y: 11.5 }, { x: 5.5, y: 7.5 }, { x: 5.5, y: 11.5 },
   { x: 23.5, y: 11.5 }, { x: 23.5, y: 6.5 }, { x: 29.5, y: 6.5 },
 ];
 
@@ -127,7 +129,7 @@ export function makeObjects(): ObjectState[] {
     o('window', 'window', 3, 1, 'the window'),
     o('vent', 'vent', 9, 7, 'heating vent'),
     o('zoomies', 'zoomies', 2, 11, 'hallway runway'),
-    o('pillow', 'pillow', 29, 1, "the human's pillow"),
+    o('pillow', 'pillow', 29, 3, "the human's pillow"),
     o('mousepad', 'mouse', 15, 17, 'toy mouse'),
   ];
 }

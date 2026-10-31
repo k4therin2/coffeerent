@@ -1,7 +1,7 @@
 import type { MinigameSpec } from './types';
 import type { Input } from './input';
 
-export interface MgResult { success: boolean; quality: number }
+export interface MgResult { success: boolean; quality: number; timedOut?: boolean }
 
 export abstract class Minigame {
   elapsed = 0;
@@ -13,7 +13,7 @@ export abstract class Minigame {
     this.elapsed += dt; this.flash = Math.max(0, this.flash - dt);
     if (this.result) return;
     this.step(dt, input);
-    if (!this.result && this.elapsed >= this.spec.time) this.result = this.timeout();
+    if (!this.result && this.elapsed >= this.spec.time) { this.result = this.timeout(); this.result.timedOut = true; }
   }
   protected abstract step(dt: number, input: Input): void;
   protected timeout(): MgResult { return { success: false, quality: 0 }; }
@@ -23,6 +23,9 @@ export abstract class Minigame {
 }
 
 const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+/** set by main.ts so hints can name the right control */
+export const hints = { touch: false };
+const K = (kb: string, touch: string) => hints.touch ? touch : kb;
 
 // ---- shared drawing helpers ----
 function panel(ctx: CanvasRenderingContext2D, w: number, h: number, title: string, hint: string, timeLeft: number) {
@@ -67,7 +70,7 @@ export class Swipe extends Minigame {
     }
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, 'SPACE when the paw is in the green. Too hard and it shatters.', this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE when the paw is in the green. Too hard and it shatters.', 'TAP when the paw is in the green. Too hard and it shatters.'), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     const half = Number(this.spec.params.zone) / 2;
@@ -96,7 +99,7 @@ export class Mash extends Minigame {
   protected timeout() { this.finish(); return this.result!; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
     const label = String(this.spec.params.label);
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, `Mash SPACE to ${label}. Press E to let it go in the green.`, this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K(`Mash SPACE to ${label}. Press E to let it go in the green.`, `MASH to ${label}. LET GO while it is in the green.`), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 110;
     const t = Number(this.spec.params.target), wd = Number(this.spec.params.width);
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 40, 10); ctx.fill();
@@ -123,7 +126,7 @@ export class Pick extends Minigame {
     }
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, 'SPACE in the green for each latch. A teammate nearby halves the latches.', this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE in the green for each latch. A teammate nearby halves the latches.', 'TAP in the green for each latch. A teammate nearby halves the latches.'), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + (this.zone - 0.1) * bw, by, 0.2 * bw, 26);
@@ -154,10 +157,11 @@ export class Zoomies extends Minigame {
   }
   protected timeout() { const q = this.hits / this.seq.length; return { success: q >= 0.5, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { y } = panel(ctx, w, h, this.spec.title, 'Hit the arrows (or WASD) in order. Fast. Every step wakes the house a little.', this.timeLeft / this.spec.time);
+    const { y, pw } = panel(ctx, w, h, this.spec.title, K('Hit the arrows (or WASD) in order. Fast. Every step wakes the house a little.', 'Tap the arrows in order. Fast. Every step wakes the house a little.'), this.timeLeft / this.spec.time);
     ctx.font = 'bold 40px system-ui, sans-serif'; ctx.textAlign = 'center';
     const start = Math.max(0, this.idx - 1);
-    for (let i = start; i < Math.min(this.seq.length, start + 7); i++) {
+    const visible = Math.max(3, Math.floor((pw / 2 - 40) / 56));
+    for (let i = start; i < Math.min(this.seq.length, start + visible); i++) {
       const dx = (i - this.idx) * 56;
       ctx.fillStyle = i < this.idx ? '#555' : i === this.idx ? (this.flash > 0 ? this.flashColor : '#f4c95d') : '#ddd';
       ctx.fillText(ARROW_GLYPH[this.seq[i]], w / 2 + dx, y + 140);
@@ -179,7 +183,7 @@ export class Stare extends Minigame {
     if (this.elapsed >= Number(this.spec.params.hold)) this.result = { success: true, quality: 1 };
   }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { y, x, pw } = panel(ctx, w, h, this.spec.title, 'Do NOT press anything. Anything. The neighbor cat is trying to bait you.', this.timeLeft / this.spec.time);
+    const { y, x, pw } = panel(ctx, w, h, this.spec.title, K('Do NOT press anything. Anything. The neighbor cat is trying to bait you.', 'Do NOT touch the screen. At all. The neighbor cat is trying to bait you.'), this.timeLeft / this.spec.time);
     // eyes
     for (const ex of [-50, 50]) {
       ctx.fillStyle = '#f2d14f'; ctx.beginPath(); ctx.ellipse(w / 2 + ex, y + 120, 34, 22, 0, 0, Math.PI * 2); ctx.fill();
@@ -211,7 +215,7 @@ export class Rhythm extends Minigame {
   }
   protected timeout() { const q = this.hits / this.beats; return { success: q >= 0.7, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, 'SPACE on each beat as it crosses the line. Lick lick lick.', this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('SPACE on each beat as it crosses the line. Lick lick lick.', 'TAP on each beat as it crosses the line. Lick lick lick.'), this.timeLeft / this.spec.time);
     const lineX = x + 80, by = y + 125, speed = 120;
     const t = this.elapsed - this.lead;
     ctx.fillStyle = '#333'; ctx.fillRect(x + 30, by - 2, pw - 60, 4);
@@ -234,7 +238,7 @@ export class Balance extends Minigame {
   step(dt: number, input: Input) {
     const drift = Number(this.spec.params.drift);
     this.vel += (Math.random() - 0.5) * drift * dt * 6 + Math.sign(this.pos) * drift * dt * 0.8;
-    const push = (input.is('d') || input.is('arrowright') ? 1 : 0) - (input.is('a') || input.is('arrowleft') ? 1 : 0);
+    const push = Math.sign(input.dirX);
     this.vel += push * 2.2 * dt;
     this.vel *= 0.985;
     this.pos += this.vel * dt * 2;
@@ -244,7 +248,7 @@ export class Balance extends Minigame {
   }
   protected timeout() { const q = this.inZone / Math.max(0.01, this.sampled); return { success: q >= 0.6, quality: q }; }
   draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const { x, y, pw } = panel(ctx, w, h, this.spec.title, 'A / D to keep your head in the green. Do not squirm.', this.timeLeft / this.spec.time);
+    const { x, y, pw } = panel(ctx, w, h, this.spec.title, K('A / D to keep your head in the green. Do not squirm.', 'Hold ◀ ▶ to keep your head in the green. Do not squirm.'), this.timeLeft / this.spec.time);
     const bx = x + 40, bw = pw - 80, by = y + 120;
     ctx.fillStyle = '#444'; roundRect(ctx, bx, by, bw, 26, 8); ctx.fill();
     ctx.fillStyle = '#4caf50'; ctx.fillRect(bx + bw * (0.5 - 0.14), by, bw * 0.28, 26);

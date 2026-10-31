@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:maps": "node tools/validate-maps.mjs"
   },
   "dependencies": {
     "peerjs": "^1.5.4"

@@ -3,8 +3,8 @@ import type { Input } from './input';
 
 export interface MgResult { success: boolean; quality: number; timedOut?: boolean }
 
-/** seconds of "GET READY" with the controls on screen before a minigame's clock starts */
-export const READY = 1.4;
+/** no lead-in: minigames start immediately (controls are shown in the key row and in the FAQ) */
+export const READY = 0;
 export interface KeyCap { kb: string; touch: string; what: string }
 
 export abstract class Minigame {
@@ -82,7 +82,7 @@ function panel(ctx: CanvasRenderingContext2D, w: number, h: number, mg: Minigame
 }
 /** big GET READY card over the panel body during the lead-in */
 function readyOverlay(ctx: CanvasRenderingContext2D, w: number, h: number, mg: Minigame) {
-  if (!mg.ready) return false;
+  if (!mg.ready || READY <= 0) return false;
   const pw = Math.min(560, w - 40), ph = 280;
   const x = (w - pw) / 2, y = (h - ph) / 2;
   ctx.fillStyle = 'rgba(10,8,20,0.97)'; roundRect(ctx, x + 12, y + 92, pw - 24, ph - 124, 10); ctx.fill();

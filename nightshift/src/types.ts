@@ -115,6 +115,7 @@ export interface Departed { name: string; cat: CatId; chaos: number; dominance: 
 
 export interface Snapshot {
   phase: Phase;
+  mapId: string;
   /** players who left mid-round, kept for the results screen */
   departed: Departed[];
   /** which objective board the team is on (1 = first) */
@@ -142,6 +143,7 @@ export interface Snapshot {
 export type ClientMsg =
   | { t: 'hello'; name: string; cat: CatId; key: string }
   | { t: 'pickcat'; cat: CatId }
+  | { t: 'setmap'; id: string } // host only: map id or 'random'
   | { t: 'pos'; x: number; y: number; dir: Dir; moving: boolean }
   | { t: 'use'; target: string } // object id or 'player:<id>' or 'vent'
   | { t: 'mgdone'; token: number; success: boolean; quality: number; timedOut?: boolean }
@@ -152,7 +154,7 @@ export type ClientMsg =
 export type HostMsg =
   | { t: 'welcome'; id: string; code: string }
   | { t: 'reject'; reason: string }
-  | { t: 'lobby'; players: { id: string; name: string; cat: CatId; host: boolean }[] }
+  | { t: 'lobby'; mapChoice: string; players: { id: string; name: string; cat: CatId; host: boolean }[] }
   | { t: 'snap'; s: Snapshot }
   | { t: 'mgstart'; spec: MinigameSpec }
   | { t: 'mgcancel'; token: number }

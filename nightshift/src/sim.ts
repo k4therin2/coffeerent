@@ -2,7 +2,7 @@ import {
   type CatId, type ClientMsg, type Decal, type Departed, type HostMsg, type LogEvent, type MinigameSpec, type Objective,
   type ObjectState, type Phase, type PlayerState, type Snapshot, type HumanState, CAT_IDS, CAT_NAMES, ROUND_SECONDS,
 } from './types';
-import { CAT_BED, HUMAN_BED, HUMAN_ROUTES, LITTER, MOUSE_SPAWN, SNACK_SPOTS, SPAWNS, type Waypoint, hasLOS, isClimbable, makeObjects, roomAt } from './map';
+import { M, MAP_IDS, setMap, type MapDef, type Waypoint, hasLOS, isClimbable, makeObjects, roomAt } from './map';
 
 const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -54,14 +54,17 @@ export class Sim {
   objectives: Objective[] = [];
   board = 0;
   busts = 0;
+  /** host's lobby choice: a map id or 'random' */
+  mapChoice: string = 'random';
+  mapId: string = M.id;
   time = 0;
   timeLeft = ROUND_SECONDS;
   suspicion = 0;
   chaos = 0;
   human: HumanState & { idx: number; sprayCd: number; route: Waypoint[]; waitUntil: number } =
-    { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0, route: HUMAN_ROUTES.hallway, waitUntil: 0 };
-  mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null as string | null, visible: true, respawnAt: 0 };
-  snack = { x: SNACK_SPOTS[0].x, y: SNACK_SPOTS[0].y, visible: true, eaten: false };
+    { phase: 'asleep', x: M.humanBed.x, y: M.humanBed.y, dir: 'down', idx: 0, sprayCd: 0, route: M.routes.hallway, waitUntil: 0 };
+  mouse = { x: M.mouseSpawn.x, y: M.mouseSpawn.y, carrier: null as string | null, visible: true, respawnAt: 0 };
+  snack = { x: M.snackSpots[0].x, y: M.snackSpots[0].y, visible: true, eaten: false };
   decals: Decal[] = [];
   ventOccupant: string | null = null;
   log: LogEvent[] = [];
@@ -97,21 +100,21 @@ export class Sim {
     if (prev && !taken.has(prev.cat)) {
       this.dropped.delete(prev.key);
       this.departed = this.departed.filter(d => d.name !== prev.name);
-      const p: PlayerState = { ...prev, id, key, connected: true, busy: false, onVent: false, carryingMouse: false, stunnedUntil: 0, ignorePosUntil: 0, x: CAT_BED.x, y: CAT_BED.y };
+      const p: PlayerState = { ...prev, id, key, connected: true, busy: false, onVent: false, carryingMouse: false, stunnedUntil: 0, ignorePosUntil: 0, x: M.catBed.x, y: M.catBed.y };
       this.players.set(id, p);
-      if (this.phase === 'playing') { this.logEv(`${p.name} is back.`, 'good'); this.warp(p, CAT_BED.x, CAT_BED.y); }
+      if (this.phase === 'playing') { this.logEv(`${p.name} is back.`, 'good'); this.warp(p, M.catBed.x, M.catBed.y); }
       this.sendLobby();
       return { p, rejoined: true };
     }
     const cat = taken.has(wantCat) ? CAT_IDS.find(c => !taken.has(c))! : wantCat;
     const slot = this.players.size;
     const p: PlayerState = {
-      id, key, name: cleanName || CAT_NAMES[cat], cat, x: SPAWNS[slot].x, y: SPAWNS[slot].y,
+      id, key, name: cleanName || CAT_NAMES[cat], cat, x: M.spawns[slot].x, y: M.spawns[slot].y,
       dir: 'down', moving: false, stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, ignorePosUntil: 0,
       dominance: 0, chaos: 0, sprays: 0, connected: true, specialReadyAt: 0,
     };
     this.players.set(id, p);
-    if (this.phase === 'playing') { this.logEv(`${p.name} snuck in through the cat flap.`, 'info'); this.warp(p, CAT_BED.x, CAT_BED.y); }
+    if (this.phase === 'playing') { this.logEv(`${p.name} snuck in through the cat flap.`, 'info'); this.warp(p, M.catBed.x, M.catBed.y); }
     this.sendLobby();
     return { p, rejoined: false };
   }
@@ -137,16 +140,23 @@ export class Sim {
     this.sendLobby();
   }
   private sendLobby() {
-    this.broadcast({ t: 'lobby', players: [...this.players.values()].map(p => ({ id: p.id, name: p.name, cat: p.cat, host: p.id === 'host' })) });
+    this.broadcast({ t: 'lobby', mapChoice: this.mapChoice, players: [...this.players.values()].map(p => ({ id: p.id, name: p.name, cat: p.cat, host: p.id === 'host' })) });
   }
 
   // ---------- round ----------
+  setMapChoice(id: string) {
+    if (this.phase !== 'lobby') return;
+    this.mapChoice = id === 'random' || MAP_IDS.includes(id) ? id : 'random';
+    this.sendLobby();
+  }
   start() {
+    this.mapId = this.mapChoice === 'random' ? MAP_IDS[Math.floor(Math.random() * MAP_IDS.length)] : this.mapChoice;
+    setMap(this.mapId);
     this.phase = 'playing';
     this.time = 0; this.timeLeft = ROUND_SECONDS; this.suspicion = 0; this.chaos = 0; this.busts = 0;
     this.objects = makeObjects();
-    this.human = { phase: 'asleep', x: HUMAN_BED.x, y: HUMAN_BED.y, dir: 'down', idx: 0, sprayCd: 0, route: HUMAN_ROUTES.hallway, waitUntil: 0 };
-    this.mouse = { x: MOUSE_SPAWN.x, y: MOUSE_SPAWN.y, carrier: null, visible: true, respawnAt: 0 };
+    this.human = { phase: 'asleep', x: M.humanBed.x, y: M.humanBed.y, dir: 'down', idx: 0, sprayCd: 0, route: M.routes.hallway, waitUntil: 0 };
+    this.mouse = { x: M.mouseSpawn.x, y: M.mouseSpawn.y, carrier: null, visible: true, respawnAt: 0 };
     this.decals = []; this.pawprintAt.clear(); this.counterTime.clear(); this.climbed.clear();
     this.placeSnack();
     this.ventOccupant = null; this.log = []; this.endReason = undefined;
@@ -157,7 +167,7 @@ export class Sim {
     let i = 0;
     for (const p of this.players.values()) {
       Object.assign(p, { stunnedUntil: 0, onVent: false, carryingMouse: false, busy: false, dominance: 0, chaos: 0, sprays: 0, specialReadyAt: 0 });
-      this.warp(p, SPAWNS[i].x, SPAWNS[i].y);
+      this.warp(p, M.spawns[i].x, M.spawns[i].y);
       i++;
     }
     this.dealBoard();
@@ -166,7 +176,7 @@ export class Sim {
   backToLobby() { this.phase = 'lobby'; this.sendLobby(); }
 
   private placeSnack() {
-    const spot = SNACK_SPOTS[Math.floor(Math.random() * SNACK_SPOTS.length)];
+    const spot = M.snackSpots[Math.floor(Math.random() * M.snackSpots.length)];
     this.snack = { x: spot.x, y: spot.y, visible: true, eaten: false };
     const o = this.objects.find(o => o.kind === 'snack'); if (o) { o.x = spot.x; o.y = spot.y; o.done = false; }
   }
@@ -219,6 +229,9 @@ export class Sim {
         return;
       case 'pickcat':
         this.setCat(pid, m.cat);
+        return;
+      case 'setmap':
+        if (pid === 'host') this.setMapChoice(m.id);
         return;
     }
   }
@@ -524,7 +537,7 @@ export class Sim {
     }
     for (const o of this.objects) if (o.done && o.cooldownUntil && this.time > o.cooldownUntil) { o.done = false; o.cooldownUntil = 0; }
     if (!this.mouse.carrier && this.mouse.respawnAt && this.time > this.mouse.respawnAt) {
-      this.mouse.visible = true; this.mouse.x = MOUSE_SPAWN.x; this.mouse.y = MOUSE_SPAWN.y; this.mouse.respawnAt = 0;
+      this.mouse.visible = true; this.mouse.x = M.mouseSpawn.x; this.mouse.y = M.mouseSpawn.y; this.mouse.respawnAt = 0;
     }
     if (this.ventOccupant) {
       const p = this.players.get(this.ventOccupant);
@@ -548,18 +561,18 @@ export class Sim {
     if (this.timeLeft <= 0) return this.end('The sun came up. Shift over.');
   }
 
-  private wake(routeName: keyof typeof HUMAN_ROUTES, phase: 'patrol' | 'hunt', line: string) {
+  private wake(routeName: keyof MapDef['routes'], phase: 'patrol' | 'hunt', line: string) {
     const h = this.human;
-    h.phase = phase; h.route = HUMAN_ROUTES[routeName]; h.idx = 0; h.waitUntil = 0;
-    h.x = HUMAN_BED.x; h.y = HUMAN_BED.y;
+    h.phase = phase; h.route = M.routes[routeName]; h.idx = 0; h.waitUntil = 0;
+    h.x = M.humanBed.x; h.y = M.humanBed.y;
     this.logEv(line, 'bad');
     this.broadcast({ t: 'toast', text: line, kind: 'bad' });
   }
   private backToBed(afterHunt: boolean) {
     const h = this.human;
-    if (h.route === HUMAN_ROUTES.snack && this.hasCat('bean')) { this.placeSnack(); this.logEv('The human left a plate out somewhere. Bean?', 'info'); }
+    if (h.route === M.routes.snack && this.hasCat('bean')) { this.placeSnack(); this.logEv('The human left a plate out somewhere. Bean?', 'info'); }
     (h as any).snackChecked = false;
-    h.phase = 'asleep'; h.x = HUMAN_BED.x; h.y = HUMAN_BED.y;
+    h.phase = 'asleep'; h.x = M.humanBed.x; h.y = M.humanBed.y;
     if (afterHunt) { this.suspicion = Math.min(this.suspicion, BAL.bust.afterHunt); this.logEv('The lights go off. The human grumbles back to bed.', 'good'); }
     else {
       this.suspicion = Math.min(this.suspicion, BAL.deepSleepResetTo); this.deepSleepUntil = this.time + BAL.deepSleepSeconds;
@@ -572,7 +585,7 @@ export class Sim {
       if (at < ROUND_SECONDS - 25) this.nextErrandAt = at;
     }
   }
-  private pickRoute(): keyof typeof HUMAN_ROUTES {
+  private pickRoute(): keyof MapDef['routes'] {
     const r = Math.random();
     return r < 0.4 ? 'hallway' : r < 0.7 ? 'kitchen' : 'living';
   }
@@ -613,7 +626,7 @@ export class Sim {
         if (h.idx >= h.route.length) {
           if (hunting) this.backToBed(true);
           else if (this.suspicion < B.keepPatrollingAbove) this.backToBed(false);
-          else { h.route = HUMAN_ROUTES[this.pickRoute()]; h.idx = 4; this.logEv('The human is still prowling.', 'bad'); }
+          else { h.route = M.routes[this.pickRoute()]; h.idx = 4; this.logEv('The human is still prowling.', 'bad'); }
         }
       }
     } else {
@@ -630,7 +643,7 @@ export class Sim {
       }
     }
     // reaching the fridge on a snack run: notice the missing snack, and leave a new one out later
-    if (d < 0.1 && target.wait && h.waitUntil !== 0 && h.route === HUMAN_ROUTES.snack && !(h as any).snackChecked) {
+    if (d < 0.1 && target.wait && h.waitUntil !== 0 && h.route === M.routes.snack && !(h as any).snackChecked) {
       (h as any).snackChecked = true;
       if (this.snack.eaten) { this.noise(BAL.snack.humanNoticesNoise); this.logEv('The human notices the snack is gone. Suspicion.', 'bad'); }
     }
@@ -652,7 +665,7 @@ export class Sim {
     if (p.carryingMouse) this.dropMouse(p);
     this.cancelPendingFor(p.id);
     if (!hunting) this.suspicion = Math.max(this.suspicion, S.suspicionFloor);
-    this.warp(p, LITTER.x, LITTER.y);
+    this.warp(p, M.litter.x, M.litter.y);
     this.send(p.id, { t: 'toast', text: `SPRAYED. -${cost}. Dumped by the litter box.`, kind: 'bad' });
     this.logEv(`${p.name} got the spray bottle. -${cost}.`, 'bad');
   }
@@ -677,7 +690,7 @@ export class Sim {
 
   snapshot(): Snapshot {
     return {
-      phase: this.phase, time: this.time, timeLeft: this.timeLeft, suspicion: this.suspicion, chaos: Math.round(this.chaos),
+      phase: this.phase, mapId: this.mapId, time: this.time, timeLeft: this.timeLeft, suspicion: this.suspicion, chaos: Math.round(this.chaos),
       players: [...this.players.values()].map(p => ({ ...p, chaos: Math.round(p.chaos), dominance: Math.round(p.dominance) })),
       objects: this.objects, objectives: this.objectives, board: this.board, busts: this.busts,
       human: { phase: this.human.phase, x: this.human.x, y: this.human.y, dir: this.human.dir },

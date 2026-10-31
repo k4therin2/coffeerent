@@ -1,5 +1,5 @@
 import { TILE, VISION_TILES, type Snapshot, type PlayerState, type Dir, type Decal } from './types';
-import { FURNITURE, MAP_H, MAP_W, ROOMS, isWall, hasLOS, type Furniture } from './map';
+import { M, mapW, mapH, isWall, hasLOS, type Furniture } from './map';
 import { drawCat, drawHuman } from './cats';
 import { roundRect } from './minigames';
 
@@ -35,9 +35,11 @@ export class Renderer {
   fogPad = 80;
   constructor(public canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
-    this.world.width = MAP_W * TILE; this.world.height = MAP_H * TILE;
     this.paintWorld();
   }
+  private paintedFor = '';
+  /** repaint the static layer if the active map changed */
+  ensureMap() { if (this.paintedFor !== M.id) this.paintWorld(); }
 
   dpr = 1;
   /** UI scale in device pixels: keeps HUD text readable on phones */
@@ -57,22 +59,24 @@ export class Renderer {
 
   /** static layer: floors, walls, furniture */
   private paintWorld() {
+    this.paintedFor = M.id;
+    this.world.width = mapW() * TILE; this.world.height = mapH() * TILE;
     const c = this.world.getContext('2d')!;
     c.fillStyle = '#15121c'; c.fillRect(0, 0, this.world.width, this.world.height);
-    for (const r of ROOMS) {
+    for (const r of M.rooms) {
       for (let ty = r.y; ty < r.y + r.h; ty++) for (let tx = r.x; tx < r.x + r.w; tx++) {
         c.fillStyle = (tx + ty) % 2 ? r.floor : r.floorAlt;
         c.fillRect(tx * TILE, ty * TILE, TILE, TILE);
       }
     }
     // walls
-    for (let ty = 0; ty < MAP_H; ty++) for (let tx = 0; tx < MAP_W; tx++) {
+    for (let ty = 0; ty < mapH(); ty++) for (let tx = 0; tx < mapW(); tx++) {
       if (!isWall(tx, ty)) continue;
       c.fillStyle = '#2b2436'; c.fillRect(tx * TILE, ty * TILE, TILE, TILE);
       c.fillStyle = '#3a3148'; c.fillRect(tx * TILE, ty * TILE, TILE, 6);
     }
     // furniture
-    for (const f of FURNITURE) {
+    for (const f of M.furniture) {
       const x = f.x * TILE, y = f.y * TILE, w = f.w * TILE, h = f.h * TILE;
       c.fillStyle = f.tall ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.25)'; c.fillRect(x + (f.tall ? 5 : 3), y + (f.tall ? 8 : 5), w, h);
       c.fillStyle = FURN_COLORS[f.kind];
@@ -103,10 +107,11 @@ export class Renderer {
     }
     // room labels
     c.font = 'bold 12px system-ui, sans-serif'; c.fillStyle = 'rgba(255,255,255,0.18)'; c.textAlign = 'left';
-    for (const r of ROOMS) c.fillText(r.name.toUpperCase(), r.x * TILE + 6, r.y * TILE + 16 + (r.name === 'Hallway' ? 0 : 0));
+    for (const r of M.rooms) c.fillText(r.name.toUpperCase(), r.x * TILE + 6, r.y * TILE + 16 + (r.name === 'Hallway' ? 0 : 0));
   }
 
   draw(snap: Snapshot | null, v: LocalView, overlay?: (ctx: CanvasRenderingContext2D, w: number, h: number) => void) {
+    this.ensureMap();
     const ctx = this.ctx, W = this.canvas.width, H = this.canvas.height, z = this.zoom;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#0b0912'; ctx.fillRect(0, 0, W, H);

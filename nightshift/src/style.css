@@ -11,6 +11,7 @@ h1 { margin: 0 0 4px; font-size: 40px; letter-spacing: 1px; color: var(--gold); 
 h1 small { display: block; font-size: 14px; color: var(--muted); font-weight: 400; letter-spacing: 0; margin-top: 4px; }
 h2 { margin: 18px 0 8px; font-size: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
 label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+select { background: #0f0c1a; border: 1px solid #3a2f55; color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 16px; width: 100%; }
 input[type=text] { background: #0f0c1a; border: 1px solid #3a2f55; color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 16px; width: 100%; }
 input.code { text-transform: uppercase; letter-spacing: 6px; font-weight: 700; font-size: 22px; text-align: center; }
 button { background: var(--gold); color: #1a1408; border: 0; border-radius: 10px; padding: 12px 18px; font-size: 16px; font-weight: 700; cursor: pointer; }
@@ -70,3 +71,8 @@ details.diag { margin-top: 16px; font-size: 12px; color: var(--muted); }
 details.diag summary { cursor: pointer; }
 details.diag pre { background: #0f0c1a; border-radius: 8px; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11px; line-height: 1.45; margin: 0; }
 details.diag .warn { color: #ffb347; } details.diag .error { color: var(--red); } details.diag .info { color: #bdb6cc; }
+
+details.faq { margin-top: 14px; font-size: 13px; color: var(--muted); }
+details.faq summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.faqlist { display: grid; gap: 10px; margin-top: 10px; line-height: 1.5; }
+.faqlist b { color: var(--text); }

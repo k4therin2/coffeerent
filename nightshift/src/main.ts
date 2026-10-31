@@ -7,7 +7,7 @@ import { Input } from './input';
 import { makeMinigame, hints, type Minigame } from './minigames';
 import { TouchControls, type TouchMode } from './touch';
 import { drawCat } from './cats';
-import { isSolid } from './map';
+import { isSolid, setMap, M, MAPS, MAP_IDS } from './map';
 import { diag, diagText, diagLines, clearDiag, onDiag } from './diag';
 
 const ui = document.getElementById('ui')!;
@@ -108,6 +108,7 @@ class Client {
   id = '';
   snap: Snapshot | null = null;
   lobby: { id: string; name: string; cat: CatId; host: boolean }[] = [];
+  mapChoice = 'random';
   screen: 'connecting' | 'lobby' | 'playing' | 'results' = 'connecting';
   x = 3; y = 6; dir: Dir = 'down'; moving = false; walkPhase = 0;
   others = new Map<string, Other>();
@@ -171,12 +172,13 @@ class Client {
         if (client === this) { client = null; renderMenu(m.reason); }
         break;
       case 'lobby':
-        this.lobby = m.players;
+        this.lobby = m.players; this.mapChoice = m.mapChoice;
         if (this.screen !== 'playing') { this.screen = 'lobby'; renderLobby(this); }
         break;
       case 'snap': {
         const prev = this.snap;
         this.snap = m.s; this.lastSnapAt = this.now;
+        if (m.s.mapId !== M.id) setMap(m.s.mapId);
         for (const p of m.s.players) {
           if (p.id === this.id) continue;
           const o = this.others.get(p.id);
@@ -362,7 +364,9 @@ function renderMenu(error = '') {
       so keep talking on voice chat. Shove teammates off the vent and groom their heads for <b>Dominance</b>, which counts for nothing except being Top Cat.</p>
       <div class="controls">
         <div><span class="kbd">WASD</span> / arrows move</div><div><span class="kbd">E</span> or <span class="kbd">Space</span> interact</div>
+        <div><span class="kbd">H</span> how to play, any time</div><div>Phones: thumbstick + PAW button</div>
       </div>
+      <details class="faq"><summary>FAQ: the minigames, hiding, and the cats</summary>${faqHtml()}</details>
     </div>`;
   const catsEl = ui.querySelector('#cats')!;
   const special = ui.querySelector('#special')!;
@@ -410,6 +414,13 @@ function renderLobby(c: Client) {
       <div class="share" id="share">${link}</div>
       <h2>Cats in the house (${c.lobby.length}/4)</h2>
       <div class="players" id="players"></div>
+      <h2>Tonight's house</h2>
+      <div class="row">
+        ${c.isHost
+          ? `<select id="map">${['random', ...MAP_IDS].map(id => `<option value="${id}" ${c.mapChoice === id ? 'selected' : ''}>${id === 'random' ? 'Surprise me (random)' : MAPS[id].name}</option>`).join('')}</select>`
+          : `<div class="share">${c.mapChoice === 'random' ? 'Surprise me (random)' : escapeHtml(MAPS[c.mapChoice]?.name ?? c.mapChoice)}</div>`}
+      </div>
+      <p class="hint">${c.mapChoice === 'random' ? 'A different layout each shift.' : escapeHtml(MAPS[c.mapChoice]?.blurb ?? '')}</p>
       <h2>Switch cat</h2>
       <div class="cats" id="cats"></div>
       <div class="row" style="margin-top:18px">
@@ -435,6 +446,8 @@ function renderLobby(c: Client) {
   (ui.querySelector('#share') as HTMLElement).onclick = () => { navigator.clipboard?.writeText(link); c.toast('Link copied'); (ui.querySelector('#share') as HTMLElement).textContent = 'Copied! ' + link; };
   const start = ui.querySelector('#start') as HTMLButtonElement | null;
   if (start) start.onclick = () => c.send({ t: 'start' });
+  const mapSel = ui.querySelector('#map') as HTMLSelectElement | null;
+  if (mapSel) mapSel.onchange = () => c.send({ t: 'setmap', id: mapSel.value });
   (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
 }
 
@@ -470,6 +483,24 @@ function renderResults(c: Client) {
   (ui.querySelector('#leave') as HTMLButtonElement).onclick = () => location.href = location.pathname;
 }
 
+function faqHtml() {
+  const k = (t: string) => `<span class="kbd">${t}</span>`;
+  const touch = input.touch;
+  return `
+    <div class="faqlist">
+      <div><b>How do I knock things off the counter?</b> Stand next to a glass, press ${touch ? 'PAW' : k('E')}, then ${touch ? 'TAP' : k('Space')} when the paw is in the green. Dead centre is a quiet thunk, the yellow edges are a loud crash, a miss drops nothing and you can try again in 3 seconds.</div>
+      <div><b>Hairball, toilet paper, the snack?</b> ${touch ? 'MASH to fill the bar, then LET GO' : 'Mash ' + k('Space') + ' to fill the bar, then press ' + k('E')} while the bar sits in the green. The bar sinks on its own.</div>
+      <div><b>Treat cabinet and drawers?</b> ${touch ? 'TAP' : k('Space')} when the marker is in the green, once per latch. A miss loses a latch. A teammate standing nearby halves the latches and earns a cut.</div>
+      <div><b>Zoomies?</b> Press the arrows ${touch ? '' : '(or WASD) '}in the order shown, fast. A wrong press skips that step.</div>
+      <div><b>Staring contest?</b> Press nothing at all for six seconds. The neighbour cat will flash fake "PRESS SPACE" prompts. Ignore them.</div>
+      <div><b>How do I groom / get groomed? What is "wiggle"?</b> Stand next to a teammate who is holding still and press ${touch ? 'PAW' : k('E')}. The groomer ${touch ? 'TAPS' : 'taps ' + k('Space')} on each beat as it crosses the line. The groomed cat's head drifts: ${touch ? 'hold ◀ or ▶' : 'tap ' + k('A') + ' or ' + k('D')} against the drift to keep it in the green for most of six seconds. Both must do well for full points.</div>
+      <div><b>What does each cat do?</b> Dorian is the only cat who can walk on counters, tables and the desk (points while up there, paw prints behind). Ginny is the only cat who can open drawers; they stay open. Melon can leave a present anywhere: with nothing else nearby, press ${touch ? 'PAW' : k('E')}, then ${touch ? 'HOLD and let go' : 'hold ' + k('Space') + ' and let go'} in the green. Bean is the only cat who can eat the snack the human left out.</div>
+      <div><b>How do I hide?</b> The human sprays what they can see within about three tiles. Walls and big furniture (couch, tables, bed, desk, fridge, shelves) block their view. Duck behind something and stay out of the hallway when you hear footsteps. The footsteps marker on screen points toward them.</div>
+      <div><b>What wakes the human?</b> Noise fills the suspicion bar. Past the first line they stir, past the second they patrol one of three routes, then go back to bed and snore for a bit (quiet window, go wild). They also get up on their own for a pee break or a midnight snack once or twice a night. If the bar fills completely the lights come on and they hunt. Twice and the shift is over.</div>
+      <div><b>What is dominance?</b> Bragging rights only. Shoving a cat off the vent, winning the stare, grooming, Dorian's counter time. The Top Cat is crowned on the results screen. It never adds to the team score.</div>
+      <div><b>Someone dropped out?</b> They can rejoin with the room code and get their cat and points back. Their scores stay on the results screen either way. The connection log at the bottom of the lobby says what happened.</div>
+    </div>`;
+}
 function helpHtml(touch: boolean) {
   const k = (t: string) => `<span class="kbd">${t}</span>`;
   return `
@@ -482,19 +513,10 @@ function helpHtml(touch: boolean) {
     <div class="controls">
       ${touch ? '<div>Left thumb: drag the stick to move</div><div>PAW button: interact with whatever the prompt names</div>'
              : `<div>${k('W')} ${k('A')} ${k('S')} ${k('D')} or arrows: move</div><div>${k('E')} or ${k('Space')}: interact with whatever the prompt names</div>`}
-      <div>${touch ? 'Buttons appear for each minigame' : k('H') + ': this screen'}</div><div>Minigames show their keys before they start</div>
+      <div>${touch ? 'Buttons appear for each minigame' : k('H') + ': this screen'}</div><div>Each minigame shows its keys under its title</div>
     </div>
-    <h2>Minigames</h2>
-    <div class="controls">
-      <div><b>Knock things off</b>: ${touch ? 'tap' : k('Space')} when the paw is in the green. Centre is quiet, edges crash, a miss drops nothing.</div>
-      <div><b>Hairball / toilet paper</b>: ${touch ? 'MASH, then LET GO' : 'mash ' + k('Space') + ', press ' + k('E')} while the bar is in the green.</div>
-      <div><b>Treat cabinet / drawers</b>: ${touch ? 'tap' : k('Space')} in the green for each latch. A friend nearby makes it easier.</div>
-      <div><b>Zoomies</b>: press the arrows in order, fast.</div>
-      <div><b>Staring contest</b>: press nothing at all for six seconds. It will bait you.</div>
-      <div><b>Grooming</b>: stand next to a teammate who is holding still. Groomer taps the beat; the groomed cat leans ${touch ? '◀ ▶' : k('A') + ' ' + k('D')} to keep their head in the green.</div>
-    </div>
-    <h2>Hiding</h2>
-    <p class="hint">The human sprays what they can see within a few tiles. Walls and big furniture block their view. Duck behind the couch, the kitchen table or the fridge, and stay out of the hallway when you hear footsteps. Each cat also has a special: Dorian climbs counters, Ginny opens drawers, Melon leaves presents, Bean eats the human's snack.</p>`;
+    <h2>FAQ</h2>
+    ${faqHtml()}`;
 }
 let helpOpen = false;
 function showHelp(fromGame: boolean) {
